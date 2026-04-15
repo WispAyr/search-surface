@@ -100,6 +100,15 @@ export const search = {
   updateTeam: (teamId: string, data: Record<string, unknown>) =>
     request<unknown>(`/search/teams/${teamId}`, { method: "PATCH", body: JSON.stringify(data) }),
 
+  // Street-clear checklist. Works with either an admin session or a field team
+  // token (passed in the query string) — driver ticks off from their phone,
+  // controller can also correct from the ops console.
+  markStreetCleared: (teamId: string, streetName: string, cleared: boolean, token?: string) =>
+    request<unknown>(
+      `/search/teams/${teamId}/streets/${encodeURIComponent(streetName)}${token ? `?token=${encodeURIComponent(token)}` : ""}`,
+      { method: "PATCH", body: JSON.stringify({ cleared }) },
+    ),
+
   // Reports
   listReports: (opId: string, limit = 100) =>
     request<{ reports: unknown[] }>(`/search/operations/${opId}/reports?limit=${limit}`),

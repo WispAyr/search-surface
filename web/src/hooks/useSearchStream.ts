@@ -42,8 +42,11 @@ export function useSearchStream(operationId: string | null) {
           case "comms":
             addCommsEntry(event.data as any);
             break;
+          case "team_assigned":
+          case "checklist_updated":
           case "operation_updated":
-            // Refetch full operation state for structural changes
+            // Refetch full operation state for structural changes so the
+            // zone board, team tracker and SAR overlays all resync in one go.
             fetch(`/api/search/operations/${operationId}`)
               .then((r) => r.json())
               .then((op) => setActiveOperation(op))

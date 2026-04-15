@@ -99,6 +99,26 @@ export function ZoneStatusBoard({ operation, onRefresh }: { operation: SearchOpe
                       <Users size={10} />
                       <span style={{ color: team.color }}>{team.name}</span>
                       <span className="text-fg-4">({team.callsign})</span>
+                      {/* Street-clear progress — populated async after assignment */}
+                      {team.street_checklist && team.street_checklist.length > 0 && (() => {
+                        const done = team.street_checklist.filter((s) => s.cleared_at).length;
+                        const total = team.street_checklist.length;
+                        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+                        return (
+                          <span className="ml-auto flex items-center gap-1 text-[10px] text-fg-4 font-mono">
+                            <span
+                              className="inline-block h-1 w-10 bg-surface-700 rounded overflow-hidden"
+                              title={`${done}/${total} streets cleared`}
+                            >
+                              <span
+                                className="block h-full bg-emerald-500"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </span>
+                            {done}/{total}
+                          </span>
+                        );
+                      })()}
                     </div>
                   )}
                 </button>

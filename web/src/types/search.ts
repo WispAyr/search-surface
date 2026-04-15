@@ -74,6 +74,12 @@ export interface SearchZone {
   completed_at: string | null;
 }
 
+export interface SearchStreetItem {
+  name: string;
+  cleared_at: string | null;
+  cleared_by: string | null;
+}
+
 export interface SearchTeam {
   id: string;
   operation_id: string;
@@ -88,6 +94,13 @@ export interface SearchTeam {
   last_lon: number | null;
   last_position_at: string | null;
   created_at: string;
+  // Populated when the team is assigned to a zone — see server/routes/search.js
+  // buildTeamAssignment. Checklist is street names from OSM; route is an OSRM
+  // driving trip through sampled zone waypoints (vehicle-capable teams only).
+  assigned_zone_id?: string | null;
+  street_checklist?: SearchStreetItem[] | null;
+  vehicle_route_geometry?: GeoJSON.LineString | null;
+  vehicle_route_meta?: { distance_m: number; duration_s: number } | null;
 }
 
 export interface SearchReport {

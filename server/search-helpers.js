@@ -246,4 +246,40 @@ router.get('/airspace', (req, res) => {
   res.json(STATIC_AIRSPACE);
 });
 
+// ── Internal helpers exposed to routes/search.js so the zone-assignment hook
+//    can build a street checklist and (for vehicle teams) a driving route
+//    without making HTTP round-trips to our own endpoints. ──
+
+async function streetsInPolygon(polygonLatLon) {
+  if (!Array.isArray(polygonLatLon) || polygonLatLon.length < 3) return [];
+  const poly = polygonLatLon.map(([la, lo]) => `${la} ${lo}`).join(' ');
+  const query = `[out:json][timeout:25];
+    way["highway"]["name"](poly:"${poly}");
+    out tags;`;
+  const key = `streets:${Buffer.from(query).toString('base64').slice(0, 48)}`;
+  const data = await cached(key, 10 * 60_000, () => overpass(query, 30_000));
+  const names = new Map();
+  for (const el of data.elements || []) {
+    const n = el.tags?.name;
+    if (!n) continue;
+    const entry = names.get(n) || { name: n, count: 0, highway: el.tags?.highway };
+    entry.count += 1;
+    names.set(n, entry);
+  }
+  return [...names.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function vehicleRouteThrough(waypointsLatLon) {
+  if (!Array.isArray(waypointsLatLon) || waypointsLatLon.length < 2) return null;
+  const trimmed = waypointsLatLon.slice(0, 50);
+  const coords = trimmed.map(([la, lo]) => `${lo},${la}`).join(';');
+  const url = `${OSRM}/trip/v1/driving/${coords}?source=first&roundtrip=true&overview=full&geometries=geojson&steps=false`;
+  const r = await axios.get(url, { timeout: 15000, headers: { 'User-Agent': UA } });
+  const trip = r.data.trips?.[0];
+  if (!trip) return null;
+  return { geometry: trip.geometry, distance_m: trip.distance, duration_s: trip.duration };
+}
+
 module.exports = router;
+module.exports.streetsInPolygon = streetsInPolygon;
+module.exports.vehicleRouteThrough = vehicleRouteThrough;

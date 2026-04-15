@@ -53,6 +53,12 @@ db.exec(`
     last_lat REAL,
     last_lon REAL,
     last_position_at TEXT,
+    -- Street-clear checklist: populated when a team is assigned to a zone.
+    -- Foot teams get a sorted street list; vehicle teams also get a driving route.
+    assigned_zone_id TEXT,
+    street_checklist TEXT,         -- JSON array of { name, cleared_at, cleared_by }
+    vehicle_route_geometry TEXT,   -- GeoJSON LineString (vehicle teams only)
+    vehicle_route_meta TEXT,       -- JSON { distance_m, duration_s }
     created_at TEXT NOT NULL
   );
 
@@ -111,6 +117,17 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_sd_op ON search_datums(operation_id);
 `);
+
+// Additive migrations for pre-checklist DBs — SQLite will error on dup-column
+// so we swallow quietly. Runs once per boot, negligible cost.
+for (const col of [
+  'assigned_zone_id TEXT',
+  'street_checklist TEXT',
+  'vehicle_route_geometry TEXT',
+  'vehicle_route_meta TEXT',
+]) {
+  try { db.exec(`ALTER TABLE search_teams ADD COLUMN ${col}`); } catch { /* already present */ }
+}
 
 function uuid() { return crypto.randomUUID(); }
 function now() { return new Date().toISOString(); }
@@ -301,25 +318,28 @@ const zones = {
 };
 
 // ── Teams ──
+function hydrateTeam(t) {
+  if (!t) return t;
+  t.members = parseJSON(t.members) || [];
+  t.street_checklist = parseJSON(t.street_checklist) || null;
+  t.vehicle_route_geometry = parseJSON(t.vehicle_route_geometry) || null;
+  t.vehicle_route_meta = parseJSON(t.vehicle_route_meta) || null;
+  return t;
+}
+
 const teams = {
   listByOperation(operationId) {
     return db.prepare('SELECT * FROM search_teams WHERE operation_id = ? ORDER BY name ASC')
       .all(operationId)
-      .map(t => ({ ...t, members: parseJSON(t.members) || [] }));
+      .map(hydrateTeam);
   },
 
   get(id) {
-    const t = db.prepare('SELECT * FROM search_teams WHERE id = ?').get(id);
-    if (!t) return null;
-    t.members = parseJSON(t.members) || [];
-    return t;
+    return hydrateTeam(db.prepare('SELECT * FROM search_teams WHERE id = ?').get(id));
   },
 
   getByToken(token) {
-    const t = db.prepare('SELECT * FROM search_teams WHERE token = ?').get(token);
-    if (!t) return null;
-    t.members = parseJSON(t.members) || [];
-    return t;
+    return hydrateTeam(db.prepare('SELECT * FROM search_teams WHERE token = ?').get(token));
   },
 
   create(operationId, { name, callsign, color, members, capability }) {
@@ -361,6 +381,41 @@ const teams = {
   updatePosition(id, lat, lon) {
     db.prepare('UPDATE search_teams SET last_lat = ?, last_lon = ?, last_position_at = ? WHERE id = ?')
       .run(lat, lon, now(), id);
+  },
+
+  // Persist the street checklist + (optional) driving route for a team when
+  // it gets assigned to a zone. Pass null for streets to clear an assignment.
+  setAssignment(id, { zoneId, streets, routeGeometry, routeMeta }) {
+    db.prepare(`
+      UPDATE search_teams
+      SET assigned_zone_id = ?, street_checklist = ?, vehicle_route_geometry = ?, vehicle_route_meta = ?
+      WHERE id = ?
+    `).run(
+      zoneId || null,
+      streets ? JSON.stringify(streets) : null,
+      routeGeometry ? JSON.stringify(routeGeometry) : null,
+      routeMeta ? JSON.stringify(routeMeta) : null,
+      id,
+    );
+    return this.get(id);
+  },
+
+  // Mark a single street on the checklist as cleared (or re-open it).
+  setStreetCleared(id, streetName, cleared, clearedBy) {
+    const t = this.get(id);
+    if (!t || !t.street_checklist) return null;
+    let found = false;
+    const updated = t.street_checklist.map((s) => {
+      if (s.name !== streetName) return s;
+      found = true;
+      return cleared
+        ? { ...s, cleared_at: now(), cleared_by: clearedBy || 'field' }
+        : { ...s, cleared_at: null, cleared_by: null };
+    });
+    if (!found) return t;
+    db.prepare('UPDATE search_teams SET street_checklist = ? WHERE id = ?')
+      .run(JSON.stringify(updated), id);
+    return this.get(id);
   },
 };
 

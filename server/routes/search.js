@@ -1,11 +1,72 @@
 const express = require('express');
 const { operations, zones, teams, reports, comms, datums, audit, generateSitrep } = require('../search-db');
+const searchHelpers = require('../search-helpers');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { EventEmitter } = require('events');
 
 const router = express.Router();
+
+// Pull an outer ring out of a zone geometry (Polygon or MultiPolygon, and the
+// server stores GeoJSON [lon,lat] while OSM helpers expect [lat,lon]).
+function zoneOuterRing(geom) {
+  const g = geom?.geometry || geom;
+  if (!g?.type || !g.coordinates) return null;
+  let ring = null;
+  if (g.type === 'Polygon') ring = g.coordinates[0];
+  else if (g.type === 'MultiPolygon') ring = g.coordinates[0]?.[0];
+  if (!Array.isArray(ring)) return null;
+  return ring.map(([lon, lat]) => [lat, lon]);
+}
+
+// Fire-and-forget: when a team gets assigned to a zone, build a street checklist
+// from OSM (and, for vehicle-capable teams, a driving route through sampled
+// waypoints). Stored on the team row and broadcast to the operation bus so the
+// controller UI and the field view both pick it up without a refresh.
+async function buildTeamAssignment(teamId, zoneId) {
+  try {
+    const team = teams.get(teamId);
+    const zone = zones.get(zoneId);
+    if (!team || !zone) return;
+    const ring = zoneOuterRing(zone.geometry);
+    if (!ring) return;
+
+    const streets = await searchHelpers.streetsInPolygon(ring).catch(() => []);
+    const checklist = streets.map((s) => ({ name: s.name, cleared_at: null, cleared_by: null }));
+
+    let routeGeometry = null;
+    let routeMeta = null;
+    if ((team.capability || '').toLowerCase().includes('vehicle') && ring.length >= 3) {
+      // Sample ≤20 waypoints evenly around the ring — OSRM trip caps at 50.
+      const step = Math.max(1, Math.floor(ring.length / 20));
+      const waypoints = ring.filter((_, i) => i % step === 0).slice(0, 20);
+      const route = await searchHelpers.vehicleRouteThrough(waypoints).catch(() => null);
+      if (route) {
+        routeGeometry = route.geometry;
+        routeMeta = { distance_m: route.distance_m, duration_s: route.duration_s };
+      }
+    }
+
+    teams.setAssignment(teamId, {
+      zoneId,
+      streets: checklist,
+      routeGeometry,
+      routeMeta,
+    });
+    audit.log(team.operation_id, 'operator', 'team_assignment_built', {
+      team_id: teamId,
+      zone_id: zoneId,
+      streets: checklist.length,
+      has_route: !!routeGeometry,
+    });
+    const updated = teams.get(teamId);
+    broadcast(team.operation_id, { type: 'team_assigned', data: updated });
+    broadcast(team.operation_id, { type: 'operation_updated', data: { id: team.operation_id } });
+  } catch (err) {
+    console.error('[search] buildTeamAssignment failed:', err?.message || err);
+  }
+}
 
 // ── SSE event bus (per-operation) ──
 const operationBus = new EventEmitter();
@@ -152,9 +213,26 @@ router.post('/operations/:id/zones/batch', requireSearchAdmin, (req, res) => {
 });
 
 router.patch('/zones/:zoneId', requireSearchAdmin, (req, res) => {
+  const before = zones.get(req.params.zoneId);
   const zone = zones.update(req.params.zoneId, req.body);
   if (!zone) return res.status(404).json({ error: 'Zone not found' });
   broadcast(zone.operation_id, { type: 'zone_updated', data: zone });
+
+  // Reactive: if the team assignment changed, build the street checklist /
+  // driving route for the new team and clear it off the previous team.
+  const prevTeamId = before?.assigned_team_id || null;
+  const nextTeamId = zone.assigned_team_id || null;
+  if (prevTeamId !== nextTeamId) {
+    if (prevTeamId) {
+      teams.setAssignment(prevTeamId, { zoneId: null, streets: null, routeGeometry: null, routeMeta: null });
+      const clearedTeam = teams.get(prevTeamId);
+      if (clearedTeam) broadcast(zone.operation_id, { type: 'team_assigned', data: clearedTeam });
+    }
+    if (nextTeamId) {
+      setImmediate(() => buildTeamAssignment(nextTeamId, zone.id));
+    }
+  }
+
   res.json(zone);
 });
 
@@ -213,6 +291,48 @@ router.patch('/teams/:teamId', requireSearchAdmin, (req, res) => {
   res.json(team);
 });
 
+// Mark a street on the team's checklist as cleared (or re-open it). Accepts
+// either a field-team token (so the driver / walker can tick it on their phone)
+// or admin access (so the controller can correct). Broadcasts a
+// `checklist_updated` event so the other side sees it instantly, and posts a
+// `area_clear` report for audit/ops visibility.
+router.patch('/teams/:teamId/streets/:streetName', (req, res) => {
+  const teamId = req.params.teamId;
+  const streetName = decodeURIComponent(req.params.streetName);
+  const cleared = !!req.body?.cleared;
+  const target = teams.get(teamId);
+  if (!target) return res.status(404).json({ error: 'Team not found' });
+
+  // Auth: field token must match THIS team, otherwise fall back to admin.
+  const tokenFromReq = req.query.token || req.headers['x-search-token'] || req.cookies?.search_token;
+  let actor = 'operator';
+  if (tokenFromReq) {
+    const holder = teams.getByToken(tokenFromReq);
+    if (!holder || holder.id !== teamId) return res.status(403).json({ error: 'Token does not match team' });
+    actor = holder.callsign || holder.name;
+  }
+
+  const updated = teams.setStreetCleared(teamId, streetName, cleared, actor);
+  if (!updated) return res.status(404).json({ error: 'Checklist or street not found' });
+
+  broadcast(updated.operation_id, { type: 'checklist_updated', data: updated });
+
+  // Only log + report on the "cleared" transition; re-opening is just a correction.
+  if (cleared) {
+    audit.log(updated.operation_id, actor, 'street_cleared', { team_id: teamId, street: streetName });
+    if (updated.assigned_zone_id) {
+      reports.create(updated.operation_id, {
+        zone_id: updated.assigned_zone_id,
+        team_id: teamId,
+        type: 'area_clear',
+        description: `Cleared: ${streetName}`,
+        severity: 'info',
+      });
+    }
+  }
+  res.json(updated);
+});
+
 router.post('/teams/:teamId/position', (req, res) => {
   const { lat, lon } = req.body;
   if (lat == null || lon == null) return res.status(400).json({ error: 'lat and lon required' });
@@ -269,6 +389,12 @@ router.get('/field/context', fieldAuth, (req, res) => {
     },
     assigned_zones: assignedZones,
     recent_reports: recentReports,
+    // Street-clear checklist and (optional) driving route already live on the
+    // team row via teams.setAssignment; echo them for clarity on the field UI.
+    street_checklist: team.street_checklist || [],
+    vehicle_route: team.vehicle_route_geometry
+      ? { geometry: team.vehicle_route_geometry, meta: team.vehicle_route_meta }
+      : null,
   });
 });
 
