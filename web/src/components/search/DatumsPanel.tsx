@@ -219,7 +219,7 @@ function DatumRow({
       <button
         onClick={onSelect}
         className="mt-0.5 shrink-0"
-        title="Use this datum for next grid pattern"
+        title="Anchor grid pattern + SAR rings / hazards to this datum"
       >
         {selected ? <Target size={14} className="text-accent" /> : <MapPin size={14} style={{ color }} />}
       </button>

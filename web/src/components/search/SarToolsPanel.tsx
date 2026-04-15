@@ -22,6 +22,7 @@ export function SarToolsPanel({ operation }: Props) {
     hazards, attractors, setOsmFeatures,
     vehicleRoute, vehicleRouteMeta, setVehicleRoute,
     selectedZoneId,
+    gridDatumId, setGridDatumId,
   } = useSearchStore();
 
   const [profiles, setProfiles] = useState<Record<string, Profile>>({});
@@ -32,8 +33,16 @@ export function SarToolsPanel({ operation }: Props) {
   const [w3w, setW3w] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const datumLat = operation.datum_lat;
-  const datumLon = operation.datum_lon;
+  // Anchor datum: the one the rings, hazard scan and w3w all resolve against.
+  // Shared with the Datums panel via gridDatumId — null means the operation's primary datum.
+  const selectedDatum = gridDatumId
+    ? (operation.datums || []).find((d) => d.id === gridDatumId) || null
+    : null;
+  const datumLat = selectedDatum ? selectedDatum.lat : operation.datum_lat;
+  const datumLon = selectedDatum ? selectedDatum.lon : operation.datum_lon;
+  const anchorLabel = selectedDatum
+    ? selectedDatum.label
+    : (operation.datum_lat && operation.datum_lon ? "Primary datum" : "— none set —");
 
   // Load profiles once
   useEffect(() => {
@@ -118,8 +127,42 @@ export function SarToolsPanel({ operation }: Props) {
     URL.revokeObjectURL(url);
   }
 
+  const primaryAvailable = operation.datum_lat != null && operation.datum_lon != null;
+  const datums = operation.datums || [];
+
   return (
     <div className="p-3 space-y-4 text-xs text-fg-2">
+      {/* ── Anchor datum ── */}
+      <section>
+        <h3 className="text-[10px] uppercase tracking-wide text-fg-4 mb-2">
+          Anchor datum{" "}
+          <span className="normal-case tracking-normal text-fg-5">
+            — rings, hazards and w3w resolve to this point
+          </span>
+        </h3>
+        <select
+          className="w-full bg-bg-2 border border-fg-5 rounded px-2 py-1.5 text-fg-1"
+          value={gridDatumId ?? ""}
+          onChange={(e) => setGridDatumId(e.target.value || null)}
+          disabled={!primaryAvailable && datums.length === 0}
+        >
+          {primaryAvailable && <option value="">Primary datum</option>}
+          {datums.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.kind.toUpperCase()} — {d.label}
+            </option>
+          ))}
+          {!primaryAvailable && datums.length === 0 && (
+            <option value="">— no datums — set one on the Datums tab</option>
+          )}
+        </select>
+        {(datumLat != null && datumLon != null) && (
+          <div className="mt-1 text-[10px] text-fg-4 font-mono">
+            {anchorLabel} · {datumLat.toFixed(5)}, {datumLon.toFixed(5)}
+          </div>
+        )}
+      </section>
+
       {/* ── Subject profile ── */}
       <section>
         <h3 className="text-[10px] uppercase tracking-wide text-fg-4 mb-2">Subject profile</h3>
@@ -185,7 +228,7 @@ export function SarToolsPanel({ operation }: Props) {
       {/* ── what3words ── */}
       {datumLat && datumLon && (
         <section>
-          <h3 className="text-[10px] uppercase tracking-wide text-fg-4 mb-2">what3words (primary datum)</h3>
+          <h3 className="text-[10px] uppercase tracking-wide text-fg-4 mb-2">what3words ({anchorLabel})</h3>
           <div className="font-mono text-accent">{w3w ? `///${w3w}` : "—"}</div>
           {w3w && (
             <a
@@ -206,7 +249,7 @@ export function SarToolsPanel({ operation }: Props) {
           disabled={busy === "hazards" || !datumLat}
           className="w-full px-2 py-1.5 bg-bg-2 border border-fg-5 rounded hover:bg-bg-3 disabled:opacity-40"
         >
-          {busy === "hazards" ? "Loading…" : "Scan 5 km around datum"}
+          {busy === "hazards" ? "Loading…" : `Scan 5 km around ${anchorLabel}`}
         </button>
         {hazards.length > 0 && (
           <div className="mt-2 space-y-1">

@@ -94,7 +94,16 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
     mobilePanelOpen,
     addingDatum,
     setAddingDatum,
+    gridDatumId,
   } = useSearchStore();
+
+  // Anchor point for SAR overlays (rings, travel radii) — follows the Datums-tab
+  // selection so the user can move the rings between primary + secondary datums.
+  const anchorDatum = gridDatumId
+    ? (operation.datums || []).find((d) => d.id === gridDatumId) || null
+    : null;
+  const anchorLat = anchorDatum ? anchorDatum.lat : operation.datum_lat;
+  const anchorLon = anchorDatum ? anchorDatum.lon : operation.datum_lon;
 
   const center: [number, number] = operation.datum_lat && operation.datum_lon
     ? [operation.datum_lat, operation.datum_lon]
@@ -216,7 +225,7 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
       <AirspaceLayer visible={showAirspace} />
 
       {/* SAR overlays (LPB rings, travel circles, hazards, route) */}
-      <SarOverlays datumLat={operation.datum_lat} datumLon={operation.datum_lon} />
+      <SarOverlays datumLat={anchorLat} datumLon={anchorLon} />
 
       {/* Click-to-set-datum handler */}
       {settingDatum && onDatumSet && (
