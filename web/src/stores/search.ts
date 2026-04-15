@@ -168,7 +168,13 @@ export const useSearchStore = create<SearchState>((set) => ({
       return { activeOperation: { ...s.activeOperation, teams } };
     }),
 
-  selectZone: (id) => set({ selectedZoneId: id }),
+  selectZone: (id) => set((s) => ({
+    selectedZoneId: id,
+    // Picking a zone on the map should surface its detail on the right — jump
+    // to the Zones tab so the user sees streets, teams, reports, etc.
+    rightPanel: id ? "zones" : s.rightPanel,
+    mobilePanelOpen: id ? true : s.mobilePanelOpen,
+  })),
   selectTeam: (id) => set({ selectedTeamId: id }),
   toggleGridGenerator: () => set((s) => ({ showGridGenerator: !s.showGridGenerator })),
   togglePODCalculator: () => set((s) => ({ showPODCalculator: !s.showPODCalculator })),
