@@ -1,0 +1,125 @@
+{
+  "type": "FeatureCollection",
+  "_note": "Simplified UK airspace — operational awareness only, NOT flight-safety grade. Use official CAA VFR chart for aviation.",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Prestwick CTR",
+        "type": "CTR",
+        "class": "D",
+        "lower_limit": "SFC",
+        "upper_limit": "6000ft ALT",
+        "controlling_authority": "Prestwick Tower",
+        "frequency": "118.150",
+        "remarks": "Glasgow Prestwick (EGPK) Control Zone"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-4.90,55.35],[-4.40,55.35],[-4.40,55.62],[-4.90,55.62],[-4.90,55.35]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Glasgow CTR",
+        "type": "CTR",
+        "class": "D",
+        "lower_limit": "SFC",
+        "upper_limit": "6000ft ALT",
+        "controlling_authority": "Glasgow Tower",
+        "frequency": "118.800",
+        "remarks": "Glasgow (EGPF) Control Zone"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-4.72,55.75],[-4.10,55.75],[-4.10,56.00],[-4.72,56.00],[-4.72,55.75]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Edinburgh CTR",
+        "type": "CTR",
+        "class": "D",
+        "lower_limit": "SFC",
+        "upper_limit": "6000ft ALT",
+        "controlling_authority": "Edinburgh Tower",
+        "frequency": "118.705",
+        "remarks": "Edinburgh (EGPH) Control Zone"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-3.55,55.85],[-3.05,55.85],[-3.05,56.10],[-3.55,56.10],[-3.55,55.85]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Scottish TMA",
+        "type": "TMA",
+        "class": "D",
+        "lower_limit": "FL55",
+        "upper_limit": "FL245",
+        "controlling_authority": "Scottish Control",
+        "frequency": "124.830",
+        "remarks": "Scottish TMA (simplified outline)"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-5.20,55.10],[-2.80,55.10],[-2.80,56.40],[-5.20,56.40],[-5.20,55.10]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "West Freugh Danger Area D-406",
+        "type": "Danger_Area",
+        "class": "",
+        "lower_limit": "SFC",
+        "upper_limit": "FL230",
+        "controlling_authority": "West Freugh",
+        "frequency": "130.050",
+        "remarks": "Active by NOTAM"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-5.00,54.75],[-4.55,54.75],[-4.55,55.05],[-5.00,55.05],[-5.00,54.75]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Machrihanish ATZ",
+        "type": "ATZ",
+        "class": "G",
+        "lower_limit": "SFC",
+        "upper_limit": "2000ft AAL",
+        "controlling_authority": "Machrihanish Radio",
+        "frequency": "122.800",
+        "remarks": "Campbeltown (EGEC)"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-5.75,55.40],[-5.55,55.40],[-5.55,55.50],[-5.75,55.50],[-5.75,55.40]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Cumbernauld ATZ",
+        "type": "ATZ",
+        "class": "G",
+        "lower_limit": "SFC",
+        "upper_limit": "2000ft AAL",
+        "controlling_authority": "Cumbernauld Radio",
+        "frequency": "120.600",
+        "remarks": "EGPG"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-4.03,55.87],[-3.92,55.87],[-3.92,55.92],[-4.03,55.92],[-4.03,55.87]]]
+      }
+    }
+  ]
+}

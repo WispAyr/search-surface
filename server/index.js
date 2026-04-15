@@ -1,0 +1,103 @@
+// search-surface backend — Express 5 + better-sqlite3.
+// Serves /api/search/* from local SQLite, proxies /api/siphon/* and /api/prism/*
+// to upstream services (same pattern as prism-surface's monolith backend).
+
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const axios = require('axios').default || require('axios');
+
+const searchRoutes = require('./routes/search');
+const searchHelperRoutes = require('./search-helpers');
+
+const app = express();
+const PORT = process.env.API_PORT || 4078;
+const SIPHON_URL = process.env.SIPHON_URL || 'http://127.0.0.1:3883';
+const PRISM_URL = process.env.PRISM_URL || 'http://127.0.0.1:3885';
+
+// ── Middleware ──
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+
+// ── TTL cache for upstream proxies (mirrors prism-surface) ──
+const proxyCache = new Map();
+const CACHE_TTL = {
+  default: 5000,
+  weather: 60000,
+  alerts: 5000,
+};
+function getCacheTTL(url) {
+  if (url.includes('/weather') || url.includes('/radar')) return CACHE_TTL.weather;
+  if (url.includes('/alerts')) return CACHE_TTL.alerts;
+  return CACHE_TTL.default;
+}
+function cachedProxy(key, fetcher, ttl) {
+  const cached = proxyCache.get(key);
+  if (cached && Date.now() - cached.ts < ttl) return Promise.resolve(cached.data);
+  return fetcher().then(data => {
+    proxyCache.set(key, { data, ts: Date.now() });
+    if (proxyCache.size > 200) {
+      const now = Date.now();
+      for (const [k, v] of proxyCache) if (now - v.ts > 300000) proxyCache.delete(k);
+    }
+    return data;
+  });
+}
+
+// ── Upload static ──
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// ── Health ──
+app.get('/api/health', (req, res) => res.json({ ok: true, service: 'search-surface', port: PORT }));
+
+// ── Siphon proxy ──
+app.use('/api/siphon', async (req, res) => {
+  try {
+    const url = `${SIPHON_URL}/api${req.url}`;
+    if (req.method === 'POST') {
+      const resp = await axios.post(url, req.body, { timeout: 15000 });
+      return res.json(resp.data);
+    }
+    const ttl = getCacheTTL(req.url);
+    const data = await cachedProxy(`siphon:${req.url}`, async () => {
+      const resp = await axios.get(url, { timeout: 15000 });
+      return resp.data;
+    }, ttl);
+    res.json(data);
+  } catch (err) {
+    const status = err.response?.status || 502;
+    res.status(status).json({ error: `Siphon: ${err.message}` });
+  }
+});
+
+// ── Prism proxy ──
+app.use('/api/prism', async (req, res) => {
+  try {
+    const url = `${PRISM_URL}/api${req.url}`;
+    if (req.method === 'POST') {
+      const resp = await axios.post(url, req.body, { timeout: 15000 });
+      return res.json(resp.data);
+    }
+    const ttl = getCacheTTL(req.url);
+    const data = await cachedProxy(`prism:${req.url}`, async () => {
+      const resp = await axios.get(url, { timeout: 15000 });
+      return resp.data;
+    }, ttl);
+    res.json(data);
+  } catch (err) {
+    const status = err.response?.status || 502;
+    res.status(status).json({ error: `Prism: ${err.message}` });
+  }
+});
+
+// ── Search helpers (geocode, OSM, LPB, airspace) — must come first ──
+app.use('/api/search', searchHelperRoutes);
+// ── Search operations (zones, teams, reports, comms, SITREP, field) ──
+app.use('/api/search', searchRoutes);
+
+app.listen(PORT, () => {
+  console.log(`[search-surface] API listening on :${PORT}`);
+  console.log(`[search-surface] SIPHON_URL=${SIPHON_URL}`);
+  console.log(`[search-surface] PRISM_URL=${PRISM_URL}`);
+});

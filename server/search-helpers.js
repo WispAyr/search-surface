@@ -1,0 +1,249 @@
+// ── Search-and-Rescue helper endpoints ──
+// Geocoding (Nominatim), OSM street/hazard extraction (Overpass),
+// Lost Person Behaviour stats, travel-mode isochrones, static UK airspace.
+
+const express = require('express');
+const axios = require('axios');
+const router = express.Router();
+
+const NOMINATIM = process.env.NOMINATIM_URL || 'https://nominatim.openstreetmap.org';
+// Primary + mirrors. We race them so a 504 on one doesn't sink the request.
+const OVERPASS_ENDPOINTS = (process.env.OVERPASS_URLS
+  ? process.env.OVERPASS_URLS.split(',')
+  : [
+      'https://overpass-api.de/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://overpass.private.coffee/api/interpreter',
+    ]
+).map(s => s.trim()).filter(Boolean);
+const OVERPASS = OVERPASS_ENDPOINTS[0];
+
+async function overpass(query, timeoutMs = 25000) {
+  // Try endpoints in sequence; first 2xx wins. Timeouts or 5xx → next mirror.
+  let lastErr;
+  for (const url of OVERPASS_ENDPOINTS) {
+    try {
+      const r = await axios.post(url, `data=${encodeURIComponent(query)}`, {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA },
+        timeout: timeoutMs,
+        validateStatus: s => s >= 200 && s < 300,
+      });
+      return r.data;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('all overpass mirrors failed');
+}
+const OSRM = process.env.OSRM_URL || 'https://router.project-osrm.org';
+const UA = 'wispayr-search/1.0 (ops@wispayr.online)';
+
+// Tiny in-memory cache — avoid hammering public APIs.
+const cache = new Map();
+function cached(key, ttlMs, fn) {
+  const hit = cache.get(key);
+  if (hit && hit.expires > Date.now()) return Promise.resolve(hit.value);
+  return fn().then((v) => { cache.set(key, { value: v, expires: Date.now() + ttlMs }); return v; });
+}
+
+// ── Lost Person Behaviour profiles (ISRID-derived, distance from IPP in km) ──
+// Rings are 25%, 50%, 75%, 95% containment.
+const LPB_PROFILES = {
+  dementia:        { label: 'Dementia / Alzheimer\'s',     rings_km: [0.3, 0.9, 2.0, 7.9],   water_risk: 0.31, notes: 'Travels in straight line until obstructed. High water-feature mortality — check rivers, ditches first.' },
+  child_1_3:       { label: 'Child 1–3 yrs',                rings_km: [0.1, 0.3, 0.7, 2.1],   water_risk: 0.15, notes: 'Stays near IPP. Oriented to play areas, will hide when scared.' },
+  child_4_6:       { label: 'Child 4–6 yrs',                rings_km: [0.2, 0.5, 1.6, 3.2],   water_risk: 0.10, notes: 'Will purposefully travel. Seeks out familiar places.' },
+  child_7_9:       { label: 'Child 7–9 yrs',                rings_km: [0.3, 1.0, 2.1, 4.8],   water_risk: 0.08, notes: 'More mobile, may follow trails/roads.' },
+  child_10_12:     { label: 'Child 10–12 yrs',              rings_km: [0.5, 1.6, 3.5, 7.0],   water_risk: 0.06, notes: 'Mobile like an adult, may have intent/destination.' },
+  child_13_15:     { label: 'Youth 13–15 yrs',              rings_km: [0.8, 2.5, 5.5, 12.0],  water_risk: 0.05, notes: 'Often despondent or intentional, check social contacts.' },
+  hiker:           { label: 'Hiker',                        rings_km: [1.0, 3.2, 6.1, 12.9],  water_risk: 0.04, notes: 'Tends to stay on trail network, may be injured.' },
+  despondent:      { label: 'Despondent / Suicidal',        rings_km: [0.3, 1.0, 3.2, 9.9],   water_risk: 0.18, notes: 'Seeks isolation, often high ground or water. Check vehicle for note.' },
+  mental_illness:  { label: 'Mental illness',               rings_km: [0.5, 1.9, 4.0, 9.6],   water_risk: 0.12, notes: 'Behaviour unpredictable; may be in public areas.' },
+  substance_abuse: { label: 'Substance abuse',              rings_km: [0.5, 1.6, 3.9, 9.3],   water_risk: 0.10, notes: 'Will often be found asleep/unconscious.' },
+  autism:          { label: 'Autism spectrum',              rings_km: [0.4, 1.2, 2.8, 8.0],   water_risk: 0.40, notes: 'STRONG water attraction. Check all water features first, even at distance.' },
+  dog:             { label: 'Missing dog',                  rings_km: [0.2, 0.8, 2.0, 5.0],   water_risk: 0.05, notes: 'Often returns to familiar routes. Ask neighbours; check parks/woods. Smaller dogs ≤ 1 km typically.' },
+  cat:             { label: 'Missing cat',                  rings_km: [0.05, 0.15, 0.3, 0.5], water_risk: 0.02, notes: 'Cats rarely go far — 90% within 500m, hiding in sheds/garages/gardens.' },
+};
+
+router.get('/profiles', (req, res) => {
+  res.json({ profiles: LPB_PROFILES });
+});
+
+// ── Geocode (forward) ──
+router.get('/geocode', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.status(400).json({ error: 'q required' });
+  try {
+    const key = `geocode:${q}`;
+    const data = await cached(key, 5 * 60_000, async () => {
+      const r = await axios.get(`${NOMINATIM}/search`, {
+        params: { q, format: 'json', limit: 8, countrycodes: 'gb', addressdetails: 1 },
+        headers: { 'User-Agent': UA },
+        timeout: 8000,
+      });
+      return r.data;
+    });
+    res.json({ results: (data || []).map((x) => ({
+      lat: parseFloat(x.lat),
+      lon: parseFloat(x.lon),
+      display_name: x.display_name,
+      type: x.type,
+      class: x.class,
+      importance: x.importance,
+      boundingbox: x.boundingbox,
+    })) });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// ── Reverse geocode ──
+router.get('/reverse', async (req, res) => {
+  const lat = parseFloat(req.query.lat), lon = parseFloat(req.query.lon);
+  if (!isFinite(lat) || !isFinite(lon)) return res.status(400).json({ error: 'lat/lon required' });
+  try {
+    const key = `rev:${lat.toFixed(4)},${lon.toFixed(4)}`;
+    const data = await cached(key, 10 * 60_000, async () => {
+      const r = await axios.get(`${NOMINATIM}/reverse`, {
+        params: { lat, lon, format: 'json', addressdetails: 1, zoom: 18 },
+        headers: { 'User-Agent': UA },
+        timeout: 8000,
+      });
+      return r.data;
+    });
+    res.json({
+      display_name: data.display_name,
+      address: data.address,
+      postcode: data.address?.postcode,
+    });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// ── Streets within a polygon (for door-knock sheet) ──
+// body: { polygon: [[lat,lon], ...] } OR { bbox: [s,w,n,e] }
+router.post('/osm/streets', async (req, res) => {
+  const { polygon, bbox } = req.body || {};
+  try {
+    let area;
+    if (polygon && Array.isArray(polygon) && polygon.length >= 3) {
+      const poly = polygon.map(([la, lo]) => `${la} ${lo}`).join(' ');
+      area = `(poly:"${poly}")`;
+    } else if (bbox && bbox.length === 4) {
+      area = `(${bbox.join(',')})`;
+    } else {
+      return res.status(400).json({ error: 'polygon or bbox required' });
+    }
+    const query = `[out:json][timeout:25];
+      way["highway"]["name"]${area};
+      out tags;`;
+    const key = `streets:${Buffer.from(query).toString('base64').slice(0, 48)}`;
+    const data = await cached(key, 10 * 60_000, () => overpass(query, 30_000));
+    const names = new Map();
+    for (const el of data.elements || []) {
+      const n = el.tags?.name;
+      if (!n) continue;
+      const entry = names.get(n) || { name: n, count: 0, highway: el.tags?.highway };
+      entry.count += 1;
+      names.set(n, entry);
+    }
+    const streets = [...names.values()].sort((a, b) => a.name.localeCompare(b.name));
+    res.json({ streets, total: streets.length });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// ── Hazards / attractors from OSM within bbox ──
+// Returns hazards (water, cliffs, railway, quarries) + attractors (shelter, benches, play, shops)
+router.post('/osm/features', async (req, res) => {
+  const { bbox } = req.body || {};
+  if (!bbox || bbox.length !== 4) return res.status(400).json({ error: 'bbox [s,w,n,e] required' });
+  const [s, w, n, e] = bbox;
+  // Cap area: Overpass returns timeouts fast on big bboxes.
+  if ((n - s) * (e - w) > 0.2) return res.status(400).json({ error: 'bbox too large (>0.2 sq deg)' });
+  const a = `(${bbox.join(',')})`;
+
+  // Split into two smaller queries so one timeout doesn't sink the other.
+  // Dropped: natural=water (too many polygons in urban areas), shop=* (too many nodes).
+  const hazardsQ = `[out:json][timeout:20];
+    (
+      way["waterway"~"river|stream|canal"]${a};
+      way["natural"="cliff"]${a};
+      way["railway"="rail"]${a};
+      way["landuse"="quarry"]${a};
+      way["man_made"="mineshaft"]${a};
+    );
+    out center tags 400;`;
+  const attractorsQ = `[out:json][timeout:20];
+    (
+      node["amenity"~"shelter|bus_station|cafe|pub|restaurant|fast_food"]${a};
+      node["leisure"~"playground|park"]${a};
+      way["leisure"~"park|nature_reserve"]${a};
+    );
+    out center tags 400;`;
+
+  const classify = (el) => {
+    const t = el.tags || {};
+    const lat = el.lat ?? el.center?.lat;
+    const lon = el.lon ?? el.center?.lon;
+    if (!lat || !lon) return null;
+    const name = t.name || '';
+    if (/river|stream|canal/.test(t.waterway || '')) return { kind: 'water', name, lat, lon, _cat: 'hazard' };
+    if (t.natural === 'cliff') return { kind: 'cliff', name, lat, lon, _cat: 'hazard' };
+    if (t.railway === 'rail') return { kind: 'railway', name, lat, lon, _cat: 'hazard' };
+    if (t.landuse === 'quarry') return { kind: 'quarry', name, lat, lon, _cat: 'hazard' };
+    if (t.man_made === 'mineshaft') return { kind: 'mineshaft', name, lat, lon, _cat: 'hazard' };
+    if (/shelter|bus_station/.test(t.amenity || '')) return { kind: t.amenity, name, lat, lon, _cat: 'attractor' };
+    if (/cafe|pub|restaurant|fast_food/.test(t.amenity || '')) return { kind: t.amenity, name, lat, lon, _cat: 'attractor' };
+    if (/playground|park|nature_reserve/.test(t.leisure || '')) return { kind: t.leisure, name, lat, lon, _cat: 'attractor' };
+    return null;
+  };
+
+  const keyBase = bbox.map(v => v.toFixed(3)).join(',');
+  const settle = async (q, key) => {
+    try { return await cached(key, 30 * 60_000, () => overpass(q, 25_000)); }
+    catch (e) { return { _error: e.message, elements: [] }; }
+  };
+  const [hz, at] = await Promise.all([
+    settle(hazardsQ, `hz:${keyBase}`),
+    settle(attractorsQ, `at:${keyBase}`),
+  ]);
+  const hazards = [], attractors = [];
+  for (const el of hz.elements || []) { const c = classify(el); if (c?._cat === 'hazard') { delete c._cat; hazards.push(c); } }
+  for (const el of at.elements || []) { const c = classify(el); if (c?._cat === 'attractor') { delete c._cat; attractors.push(c); } }
+  const errors = [hz._error, at._error].filter(Boolean);
+  res.json({ hazards, attractors, partial: errors.length > 0, errors });
+});
+
+// ── Vehicle route through a polygon (OSRM trip) ──
+// body: { waypoints: [[lat,lon], ...] }   (must already be sampled — we keep backend dumb)
+router.post('/route/vehicle', async (req, res) => {
+  const { waypoints } = req.body || {};
+  if (!Array.isArray(waypoints) || waypoints.length < 2) return res.status(400).json({ error: 'waypoints[] required (>=2)' });
+  if (waypoints.length > 50) return res.status(400).json({ error: 'max 50 waypoints' });
+  try {
+    const coords = waypoints.map(([la, lo]) => `${lo},${la}`).join(';');
+    const url = `${OSRM}/trip/v1/driving/${coords}?source=first&roundtrip=true&overview=full&geometries=geojson&steps=false`;
+    const r = await axios.get(url, { timeout: 15000, headers: { 'User-Agent': UA } });
+    const trip = r.data.trips?.[0];
+    if (!trip) return res.status(502).json({ error: 'no trip found' });
+    res.json({
+      geometry: trip.geometry,
+      distance_m: trip.distance,
+      duration_s: trip.duration,
+      waypoints: r.data.waypoints,
+    });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// ── Static simplified UK airspace (fallback for siphon) ──
+// Major CTRs/ATZs covering Scotland & NW England. Not flight-safety grade — ops awareness only.
+const STATIC_AIRSPACE = require('./data/uk-airspace-static.json');
+router.get('/airspace', (req, res) => {
+  res.json(STATIC_AIRSPACE);
+});
+
+module.exports = router;

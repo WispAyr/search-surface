@@ -1,0 +1,224 @@
+@import "tailwindcss";
+
+/* ══════════════════════════════════════════════════════════════
+   PRISM SURFACE — Design Token System
+   Supports dark (default) and light themes via CSS custom properties.
+   Toggle .light on <html> to switch; tokens cascade automatically.
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── Dark Theme (default) ── */
+:root {
+  color-scheme: dark;
+
+  /* Surface palette */
+  --s-900: #0a0e1a;
+  --s-800: #0f1424;
+  --s-700: #161c30;
+  --s-600: #1e2640;
+  --s-500: #2a3352;
+
+  /* Foreground hierarchy */
+  --t-fg:  #ffffff;
+  --t-fg-2: rgba(255,255,255,0.70);
+  --t-fg-3: rgba(255,255,255,0.50);
+  --t-fg-4: rgba(255,255,255,0.32);
+  --t-fg-5: rgba(255,255,255,0.16);
+
+  /* Border hierarchy */
+  --b-line:        rgba(255,255,255,0.06);
+  --b-line-subtle: rgba(255,255,255,0.03);
+  --b-line-strong: rgba(255,255,255,0.12);
+
+  /* Interactive tints */
+  --i-tint-1: rgba(255,255,255,0.03);
+  --i-tint-2: rgba(255,255,255,0.06);
+  --i-tint-3: rgba(255,255,255,0.12);
+
+  /* Accent palette */
+  --c-accent:     #00d4ff;
+  --c-accent-dim: #00a0c4;
+  --c-warn:       #ffb020;
+  --c-danger:     #ff4060;
+  --c-ok:         #00e88f;
+  --c-info:       #60a5fa;
+
+  /* Glass */
+  --glass-bg: rgba(15, 20, 36, 0.85);
+  --glass-border: rgba(255,255,255,0.06);
+}
+
+/* ── Light Theme ── */
+:root.light {
+  color-scheme: light;
+
+  --s-900: #f1f3f6;
+  --s-800: #ffffff;
+  --s-700: #f7f8fa;
+  --s-600: #eceef2;
+  --s-500: #d4d9e2;
+
+  --t-fg:  #0f172a;
+  --t-fg-2: rgba(15,23,42,0.78);
+  --t-fg-3: rgba(15,23,42,0.58);
+  --t-fg-4: rgba(15,23,42,0.44);
+  --t-fg-5: rgba(15,23,42,0.28);
+
+  --b-line:        rgba(15,23,42,0.12);
+  --b-line-subtle: rgba(15,23,42,0.06);
+  --b-line-strong: rgba(15,23,42,0.20);
+
+  --i-tint-1: rgba(15,23,42,0.035);
+  --i-tint-2: rgba(15,23,42,0.06);
+  --i-tint-3: rgba(15,23,42,0.12);
+
+  --c-accent:     #0891b2;
+  --c-accent-dim: #0e7490;
+  --c-warn:       #d97706;
+  --c-danger:     #dc2626;
+  --c-ok:         #059669;
+  --c-info:       #2563eb;
+
+  --glass-bg: rgba(255, 255, 255, 0.88);
+  --glass-border: rgba(15,23,42,0.08);
+}
+
+/* ── Tailwind Design Tokens ── */
+@theme {
+  /* Surface */
+  --color-surface-900: var(--s-900);
+  --color-surface-800: var(--s-800);
+  --color-surface-700: var(--s-700);
+  --color-surface-600: var(--s-600);
+  --color-surface-500: var(--s-500);
+
+  /* Foreground */
+  --color-fg:   var(--t-fg);
+  --color-fg-2: var(--t-fg-2);
+  --color-fg-3: var(--t-fg-3);
+  --color-fg-4: var(--t-fg-4);
+  --color-fg-5: var(--t-fg-5);
+
+  /* Borders */
+  --color-line:        var(--b-line);
+  --color-line-subtle: var(--b-line-subtle);
+  --color-line-strong: var(--b-line-strong);
+
+  /* Interactive tints */
+  --color-tint-1: var(--i-tint-1);
+  --color-tint-2: var(--i-tint-2);
+  --color-tint-3: var(--i-tint-3);
+
+  /* Semantic */
+  --color-accent:     var(--c-accent);
+  --color-accent-dim: var(--c-accent-dim);
+  --color-warn:       var(--c-warn);
+  --color-danger:     var(--c-danger);
+  --color-ok:         var(--c-ok);
+  --color-info:       var(--c-info);
+}
+
+/* ── Base Styles ── */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--s-900);
+  color: var(--t-fg);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Theme transition — smooth color shifts */
+*, *::before, *::after {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.15s ease, box-shadow 0.2s ease;
+}
+/* Exclude map + animated elements from transition */
+.leaflet-container, .leaflet-container *, [class*="animate-"] {
+  transition: none !important;
+}
+
+/* ── Leaflet Overrides ── */
+.leaflet-container {
+  background: var(--s-900) !important;
+}
+.leaflet-control-zoom a {
+  background: var(--s-700) !important;
+  color: var(--t-fg-2) !important;
+  border-color: var(--b-line) !important;
+}
+.leaflet-control-attribution {
+  background: var(--glass-bg) !important;
+  color: var(--t-fg-5) !important;
+  font-size: 10px !important;
+}
+.leaflet-popup-content-wrapper {
+  background: var(--s-700) !important;
+  color: var(--t-fg-2) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3) !important;
+}
+.leaflet-popup-tip {
+  background: var(--s-700) !important;
+}
+.prism-tooltip {
+  background: var(--s-700) !important;
+  color: var(--t-fg-2) !important;
+  border: 1px solid var(--b-line) !important;
+  border-radius: 6px !important;
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3) !important;
+}
+.prism-tooltip::before {
+  border-top-color: var(--s-700) !important;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--b-line-strong);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-accent-dim);
+}
+
+/* ── Glass Effect ── */
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.12);
+}
+
+/* ── Focus Ring ── */
+:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+
+/* ── Selection ── */
+::selection {
+  background: var(--c-accent);
+  color: white;
+}
+
+/* ── Mobile safe area (notch / home indicator) ── */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ── Touch improvements ── */
+@media (hover: none) and (pointer: coarse) {
+  /* Larger touch targets on mobile */
+  .leaflet-control-zoom a {
+    width: 36px !important;
+    height: 36px !important;
+    line-height: 36px !important;
+    font-size: 18px !important;
+  }
+}
