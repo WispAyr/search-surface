@@ -160,7 +160,7 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
       {showGridGenerator && <GridGenerator operation={op} onRefresh={refresh} />}
       {showPODCalculator && <PODCalculator operation={op} />}
       {showExportPanel && <ExportPanel operation={op} />}
-      {showSitrepPanel && <SitrepPanel operationId={op.id} />}
+      {showSitrepPanel && <SitrepPanel operationId={op.id} recipients={op.sitrep_recipients || []} operationName={op.name} />}
     </div>
   );
 }

@@ -4,7 +4,17 @@ const searchHelpers = require('../search-helpers');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const axios = require('axios').default || require('axios');
 const { EventEmitter } = require('events');
+
+// Mail relay — see user memory reference_mail_relay. big-server must go via
+// the nginx-fronted public port; small-server-local services use :3880 on
+// loopback. Defaults here work for big-server deployment.
+const MAIL_RELAY_URL = process.env.MAIL_RELAY_URL || 'http://172.81.61.36:13880/send';
+const MAIL_RELAY_KEY = process.env.MAIL_RELAY_KEY || 'skynet-mail-relay-key-2026';
+const MAIL_FROM = process.env.SITREP_MAIL_FROM || 'no-reply@wispayr.online';
+const MAIL_FROM_NAME = process.env.SITREP_MAIL_FROM_NAME || 'Search Ops';
+const PUBLIC_BASE = process.env.PUBLIC_BASE || 'https://search.wispayr.online';
 
 const router = express.Router();
 
@@ -598,6 +608,93 @@ router.get('/brief/:token', (req, res) => {
 router.get('/auth/status', (req, res) => {
   res.json(adminAuthStatus(req));
 });
+
+// Email the current SITREP to a list of stakeholders. Routed through the
+// shared mail relay (see user memory reference_mail_relay). Creates a fresh
+// 72h share token so recipients get a live-briefing link, not a snapshot.
+router.post('/operations/:id/sitrep/email', requireSearchAdmin, async (req, res) => {
+  const op = operations.get(req.params.id);
+  if (!op) return res.status(404).json({ error: 'Operation not found' });
+
+  const recipients = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
+  const clean = recipients
+    .map((s) => String(s).trim())
+    .filter((s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s));
+  if (clean.length === 0) return res.status(400).json({ error: 'At least one valid recipient required' });
+  if (clean.length > 30) return res.status(400).json({ error: 'Too many recipients (max 30)' });
+
+  const extraNote = typeof req.body?.message === 'string' ? req.body.message.slice(0, 2000) : '';
+
+  const sitrep = generateSitrep(req.params.id);
+  if (!sitrep) return res.status(500).json({ error: 'Failed to generate SITREP' });
+
+  // Fresh share token so the link stays live (stakeholders can reopen the
+  // brief as teams move). 72h matches the Share button in ExportPanel.
+  const share = shareTokens.create(req.params.id, { createdBy: 'sitrep_email', ttlHours: 72 });
+  const briefUrl = `${PUBLIC_BASE}/brief/${share.token}`;
+
+  const subject = `SITREP — ${op.name} (${op.status})`;
+  const subjectInfo = op.subject_info;
+  const subjectBlock = subjectInfo?.name
+    ? `Subject: ${subjectInfo.name}${subjectInfo.age ? `, ${subjectInfo.age}y` : ''}${subjectInfo.description ? ` — ${subjectInfo.description}` : ''}`
+    : '';
+
+  const html = `
+    <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 640px; margin: 0 auto; color: #111;">
+      <h2 style="margin: 0 0 4px; color: #0f172a;">${escapeHtml(op.name)}</h2>
+      <div style="color: #64748b; font-size: 13px; margin-bottom: 12px;">
+        ${escapeHtml((op.type || '').replace(/_/g, ' '))} · <strong>${escapeHtml(op.status)}</strong>
+      </div>
+      ${subjectBlock ? `<div style="padding: 10px 12px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; font-size: 13px; margin-bottom: 14px;">${escapeHtml(subjectBlock)}</div>` : ''}
+      ${extraNote ? `<div style="padding: 10px 12px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; font-size: 13px; margin-bottom: 14px; white-space: pre-wrap;">${escapeHtml(extraNote)}</div>` : ''}
+      <pre style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap; color: #1e293b;">${escapeHtml(sitrep.text)}</pre>
+      <p style="margin-top: 16px; font-size: 13px;">
+        <a href="${briefUrl}" style="background: #0284c7; color: white; text-decoration: none; padding: 8px 14px; border-radius: 4px; display: inline-block;">Open live briefing</a>
+      </p>
+      <p style="margin-top: 8px; color: #64748b; font-size: 11px;">
+        Live link valid 72h. Generated at ${new Date().toISOString()} from search.wispayr.online.
+      </p>
+    </div>
+  `;
+
+  const text = [
+    op.name,
+    `${op.type?.replace(/_/g, ' ') || ''} · ${op.status}`,
+    subjectBlock ? '' : null,
+    subjectBlock,
+    extraNote ? `\n${extraNote}\n` : null,
+    '',
+    sitrep.text,
+    '',
+    `Live briefing: ${briefUrl} (72h)`,
+  ].filter((x) => x !== null).join('\n');
+
+  try {
+    await axios.post(MAIL_RELAY_URL, {
+      from: `${MAIL_FROM_NAME} <${MAIL_FROM}>`,
+      to: clean,
+      subject,
+      text,
+      html,
+    }, {
+      timeout: 15000,
+      headers: { 'x-api-key': MAIL_RELAY_KEY, 'Content-Type': 'application/json' },
+    });
+  } catch (err) {
+    const detail = err.response?.data || err.message;
+    audit.log(req.params.id, 'operator', 'sitrep_email_failed', { error: String(detail).slice(0, 500) });
+    return res.status(502).json({ error: 'Mail relay rejected the request', detail });
+  }
+
+  // Persist recipients so controllers don't retype next broadcast.
+  operations.update(req.params.id, { sitrep_recipients: clean });
+  audit.log(req.params.id, 'operator', 'sitrep_emailed', { recipients: clean, share_token: share.token });
+  res.json({ ok: true, sent: clean.length, recipients: clean, share_token: share.token });
+});
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
 // ════════════════════════════════════════════════
 // EXPORT

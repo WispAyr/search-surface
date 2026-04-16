@@ -149,6 +149,11 @@ export const search = {
 
   // SITREP
   getSitrep: (opId: string) => request<unknown>(`/search/operations/${opId}/sitrep`),
+  emailSitrep: (opId: string, recipients: string[], message?: string) =>
+    request<{ ok: boolean; sent: number; recipients: string[]; share_token: string }>(
+      `/search/operations/${opId}/sitrep/email`,
+      { method: "POST", body: JSON.stringify({ recipients, message }) },
+    ),
 
   // Export URLs (download links)
   exportGeoJSON: (opId: string) => `${BASE}/search/operations/${opId}/export/geojson`,

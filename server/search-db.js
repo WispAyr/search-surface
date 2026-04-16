@@ -144,6 +144,14 @@ for (const col of [
   try { db.exec(`ALTER TABLE search_teams ADD COLUMN ${col}`); } catch { /* already present */ }
 }
 
+// Persist the last SITREP recipient list per operation so controllers don't
+// retype on every broadcast.
+for (const col of [
+  'sitrep_recipients TEXT',
+]) {
+  try { db.exec(`ALTER TABLE search_operations ADD COLUMN ${col}`); } catch { /* already present */ }
+}
+
 function uuid() { return crypto.randomUUID(); }
 function now() { return new Date().toISOString(); }
 function generateToken() { return crypto.randomBytes(24).toString('hex'); }
@@ -173,6 +181,7 @@ const operations = {
     const op = db.prepare('SELECT * FROM search_operations WHERE id = ?').get(id);
     if (!op) return null;
     op.subject_info = parseJSON(op.subject_info);
+    op.sitrep_recipients = parseJSON(op.sitrep_recipients) || [];
     op.zones = zones.listByOperation(id);
     op.teams = teams.listByOperation(id);
     op.datums = datums.listByOperation(id);
@@ -193,12 +202,12 @@ const operations = {
   },
 
   update(id, fields) {
-    const allowed = ['name', 'type', 'status', 'datum_lat', 'datum_lon', 'bounds', 'subject_info', 'weather_notes', 'linked_event_id'];
+    const allowed = ['name', 'type', 'status', 'datum_lat', 'datum_lon', 'bounds', 'subject_info', 'weather_notes', 'linked_event_id', 'sitrep_recipients'];
     const sets = [];
     const vals = [];
     for (const [k, v] of Object.entries(fields)) {
       if (!allowed.includes(k)) continue;
-      if (k === 'subject_info') {
+      if (k === 'subject_info' || k === 'sitrep_recipients') {
         sets.push(`${k} = ?`);
         vals.push(JSON.stringify(v));
       } else {

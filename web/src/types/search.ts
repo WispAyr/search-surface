@@ -39,6 +39,7 @@ export interface SearchOperation {
   zone_count?: number;
   team_count?: number;
   report_count?: number;
+  sitrep_recipients?: string[];
 }
 
 export type DatumKind = 'lkp' | 'plp' | 'sighting' | 'witness' | 'other';
