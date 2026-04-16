@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { search } from "@/lib/api";
 import { useSearchStore } from "@/stores/search";
+import { isTeamSilent, SILENT_THRESHOLD_MIN } from "@/lib/teamStatus";
 import type { SearchOperation, SearchTeam } from "@/types/search";
-import { Plus, MapPin, Clock, Copy, Radio, UserPlus, QrCode } from "lucide-react";
+import { Plus, MapPin, Clock, Copy, Radio, UserPlus, QrCode, AlertTriangle, ArrowUpDown } from "lucide-react";
 
 const STATUS_BADGE: Record<string, { bg: string; label: string }> = {
   standby: { bg: "bg-surface-600 text-fg-4", label: "Standby" },
@@ -13,9 +14,37 @@ const STATUS_BADGE: Record<string, { bg: string; label: string }> = {
   stood_down: { bg: "bg-red-500/20 text-red-300", label: "Stood Down" },
 };
 
+const STATUS_ORDER: Record<string, number> = { deployed: 0, returning: 1, standby: 2, stood_down: 3 };
+type TeamSortKey = "status" | "name" | "last_seen";
+
 export function TeamTracker({ operation, onRefresh }: { operation: SearchOperation; onRefresh?: () => void }) {
   const [showCreate, setShowCreate] = useState(false);
-  const teams = operation.teams || [];
+  const [sortKey, setSortKey] = useState<TeamSortKey>("status");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const rawTeams = operation.teams || [];
+
+  const teams = useMemo(() => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...rawTeams].sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === "status") cmp = (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99);
+      else if (sortKey === "name") cmp = a.name.localeCompare(b.name);
+      else if (sortKey === "last_seen") {
+        const ta = a.last_position_at ? new Date(a.last_position_at).getTime() : 0;
+        const tb = b.last_position_at ? new Date(b.last_position_at).getTime() : 0;
+        cmp = ta - tb; // ascending = oldest first (most concerning)
+      }
+      if (cmp === 0) cmp = a.name.localeCompare(b.name);
+      return cmp * dir;
+    });
+  }, [rawTeams, sortKey, sortDir]);
+
+  const toggleSort = (key: TeamSortKey) => {
+    if (sortKey === key) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDir("asc"); }
+  };
+
+  const silentCount = useMemo(() => rawTeams.filter(isTeamSilent).length, [rawTeams]);
 
   return (
     <div className="p-3">
@@ -28,6 +57,33 @@ export function TeamTracker({ operation, onRefresh }: { operation: SearchOperati
           <Plus size={12} /> Add Team
         </button>
       </div>
+
+      {silentCount > 0 && (
+        <div className="mb-2 px-2 py-1.5 rounded bg-red-500/10 border border-red-500/30 flex items-center gap-2 text-xs text-red-300">
+          <AlertTriangle size={12} />
+          <span>
+            {silentCount} deployed team{silentCount > 1 ? "s" : ""} silent &gt; {SILENT_THRESHOLD_MIN}min — request checkin.
+          </span>
+        </div>
+      )}
+
+      {rawTeams.length > 1 && (
+        <div className="mb-2 flex items-center gap-1 text-[10px]">
+          <ArrowUpDown size={10} className="text-fg-4" />
+          {(["status", "name", "last_seen"] as const).map((k) => (
+            <button
+              key={k}
+              onClick={() => toggleSort(k)}
+              className={`px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                sortKey === k ? "bg-accent/20 text-accent" : "text-fg-4 hover:text-fg-2"
+              }`}
+            >
+              {k.replace(/_/g, " ")}
+              {sortKey === k && <span className="ml-0.5">{sortDir === "asc" ? "↑" : "↓"}</span>}
+            </button>
+          ))}
+        </div>
+      )}
 
       {showCreate && (
         <CreateTeamForm
@@ -68,13 +124,16 @@ function TeamCard({ team }: { team: SearchTeam }) {
   const timeSincePosition = team.last_position_at
     ? Math.round((Date.now() - new Date(team.last_position_at).getTime()) / 60000)
     : null;
+  const silent = isTeamSilent(team);
 
   return (
     <div
       className={`p-3 rounded border transition cursor-pointer ${
         isSelected
           ? "bg-accent/10 border-accent/30"
-          : "bg-surface-800 border-surface-700 hover:border-surface-600"
+          : silent
+            ? "bg-red-500/5 border-red-500/40 hover:border-red-500/60"
+            : "bg-surface-800 border-surface-700 hover:border-surface-600"
       }`}
       onClick={() => selectTeam(isSelected ? null : team.id)}
     >
@@ -83,6 +142,11 @@ function TeamCard({ team }: { team: SearchTeam }) {
           <div className="w-3 h-3 rounded-full" style={{ backgroundColor: team.color }} />
           <span className="font-medium text-sm">{team.name}</span>
           <span className="text-xs text-fg-4">({team.callsign})</span>
+          {silent && (
+            <span className="flex items-center gap-0.5 text-[10px] text-red-300 bg-red-500/10 px-1.5 py-0.5 rounded border border-red-500/40">
+              <AlertTriangle size={10} /> SILENT
+            </span>
+          )}
         </div>
         <span className={`px-1.5 py-0.5 rounded text-[10px] ${STATUS_BADGE[team.status].bg}`}>
           {STATUS_BADGE[team.status].label}
@@ -96,17 +160,21 @@ function TeamCard({ team }: { team: SearchTeam }) {
         <span className="flex items-center gap-1">
           <Radio size={10} /> {team.capability}
         </span>
-        {team.last_lat && (
+        {team.last_lat ? (
           <span className="flex items-center gap-1">
             <MapPin size={10} />
             {team.last_lat.toFixed(4)}, {team.last_lon?.toFixed(4)}
             {timeSincePosition !== null && (
-              <span className={timeSincePosition > 30 ? "text-red-400" : ""}>
+              <span className={silent ? "text-red-400 font-medium" : timeSincePosition > 10 ? "text-amber-400" : ""}>
                 ({timeSincePosition}m ago)
               </span>
             )}
           </span>
-        )}
+        ) : team.status === "deployed" ? (
+          <span className="flex items-center gap-1 text-red-400">
+            <MapPin size={10} /> No checkin yet
+          </span>
+        ) : null}
       </div>
 
       {/* Token & actions */}

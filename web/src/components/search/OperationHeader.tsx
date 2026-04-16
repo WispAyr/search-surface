@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { search, siphon, prism } from "@/lib/api";
 import { useSearchStore } from "@/stores/search";
+import { isTeamSilent, SILENT_THRESHOLD_MIN } from "@/lib/teamStatus";
 import type { SearchOperation } from "@/types/search";
 import {
   ArrowLeft,
@@ -101,6 +102,7 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
       ? zones.reduce((s, z) => s + (z.cumulative_pod || 0), 0) / zones.length
       : 0;
   const deployed = teams.filter((t) => t.status === "deployed").length;
+  const silentTeams = teams.filter(isTeamSilent).length;
 
   return (
     <header className="border-b border-surface-700 bg-surface-800 px-4 py-2.5 flex items-center justify-between gap-4">
@@ -137,6 +139,16 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
           <span className="text-fg-1">{deployed}/{teams.length}</span>{" "}
           <span className="text-fg-4">deployed</span>
         </div>
+        {silentTeams > 0 && (
+          <button
+            onClick={() => { setRightPanel("teams"); setMobilePanelOpen(true); }}
+            className="flex items-center gap-1 px-2 py-0.5 bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 rounded text-red-300 text-xs animate-pulse"
+            title={`${silentTeams} team${silentTeams > 1 ? "s" : ""} silent > ${SILENT_THRESHOLD_MIN}min — open Teams`}
+          >
+            <AlertTriangle size={11} />
+            {silentTeams} silent
+          </button>
+        )}
         <WeatherChip wx={wx} onClick={() => { setRightPanel("conditions"); setMobilePanelOpen(true); }} />
         {operation.subject_info?.name && (
           <div className="border-l border-surface-600 pl-4">

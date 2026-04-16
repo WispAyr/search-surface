@@ -37,6 +37,10 @@ interface FieldContext {
 }
 
 const POLL_MS = 8000;
+// Silent background check-in cadence for deployed teams. Pairs with the 15-min
+// controller-side silent-team alarm (three missed pings before we warn). Kept
+// separate from the manual check-in button so drivers can also checkin on demand.
+const AUTO_CHECKIN_MS = 5 * 60 * 1000;
 
 export default function FieldPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = use(params);
@@ -93,10 +97,13 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
     }
   }
 
-  async function checkin() {
+  // Shared checkin implementation. `silent` mode suppresses alerts and the
+  // follow-up reload — used by the auto-checkin interval to avoid spamming
+  // the driver with popups or refreshing state they might be reading.
+  async function doCheckin({ silent }: { silent: boolean }) {
     if (!ctx) return;
     if (!("geolocation" in navigator)) {
-      alert("Location not supported on this device");
+      if (!silent) alert("Location not supported on this device");
       return;
     }
     navigator.geolocation.getCurrentPosition(
@@ -107,15 +114,29 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
           });
-          await load();
+          if (!silent) await load();
         } catch (e) {
-          alert(`Check-in failed: ${e instanceof Error ? e.message : String(e)}`);
+          if (!silent) alert(`Check-in failed: ${e instanceof Error ? e.message : String(e)}`);
         }
       },
-      (err) => alert(`Location error: ${err.message}`),
-      { enableHighAccuracy: true, timeout: 15000 },
+      (err) => { if (!silent) alert(`Location error: ${err.message}`); },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: silent ? 60000 : 0 },
     );
   }
+
+  async function checkin() { await doCheckin({ silent: false }); }
+
+  // Auto-checkin while deployed. Uses a ref to avoid missing state from the
+  // interval closure, and fires once on mount (after context loads) so the
+  // first ping lands promptly even if the team just became deployed.
+  useEffect(() => {
+    if (!ctx) return;
+    const deployed = ctx.team.status === "deployed" || ctx.team.status === "returning";
+    if (!deployed) return;
+    doCheckin({ silent: true });
+    const id = setInterval(() => doCheckin({ silent: true }), AUTO_CHECKIN_MS);
+    return () => clearInterval(id);
+  }, [ctx?.team.status, ctx?.team.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (error && !ctx) {
     return (

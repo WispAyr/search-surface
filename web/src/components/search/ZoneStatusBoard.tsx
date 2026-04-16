@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { search } from "@/lib/api";
 import { useSearchStore } from "@/stores/search";
 import type { SearchOperation, SearchZone } from "@/types/search";
-import { ChevronDown, ChevronUp, MapPin, Users, Check, Pause, Trash2, Download, Plane, Clock } from "lucide-react";
+import { ChevronDown, ChevronUp, MapPin, Users, Check, Pause, Trash2, Download, Plane, Clock, ArrowUpDown, Filter } from "lucide-react";
 
 const STATUS_BADGE: Record<string, { bg: string; label: string }> = {
   unassigned: { bg: "bg-surface-600 text-fg-4", label: "Unassigned" },
@@ -22,12 +22,45 @@ const PRIORITY_COLORS: Record<number, string> = {
   5: "text-fg-4/50",
 };
 
+type SortKey = "priority" | "name" | "status" | "pod";
+type StatusFilter = "all" | "unassigned" | "assigned" | "in_progress" | "complete" | "suspended";
+
+const STATUS_ORDER: Record<string, number> = { in_progress: 0, assigned: 1, unassigned: 2, suspended: 3, complete: 4 };
+
 export function ZoneStatusBoard({ operation, onRefresh }: { operation: SearchOperation; onRefresh?: () => void }) {
   const { selectedZoneId, selectZone } = useSearchStore();
   const [expandedZone, setExpandedZone] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("priority");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
-  const zones = (operation.zones || []).sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name));
+  const rawZones = operation.zones || [];
   const teams = operation.teams || [];
+
+  const zones = useMemo(() => {
+    const filtered = statusFilter === "all" ? rawZones : rawZones.filter((z) => z.status === statusFilter);
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === "priority") cmp = a.priority - b.priority;
+      else if (sortKey === "name") cmp = a.name.localeCompare(b.name);
+      else if (sortKey === "status") cmp = (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99);
+      else if (sortKey === "pod") cmp = (a.cumulative_pod || 0) - (b.cumulative_pod || 0);
+      if (cmp === 0) cmp = a.name.localeCompare(b.name);
+      return cmp * dir;
+    });
+  }, [rawZones, sortKey, sortDir, statusFilter]);
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDir(key === "pod" ? "desc" : "asc"); }
+  };
+
+  const statusCounts = useMemo(() => {
+    const c: Record<string, number> = { all: rawZones.length };
+    for (const z of rawZones) c[z.status] = (c[z.status] || 0) + 1;
+    return c;
+  }, [rawZones]);
 
   const getTeamName = (id: string | null) => {
     if (!id) return null;
@@ -38,13 +71,55 @@ export function ZoneStatusBoard({ operation, onRefresh }: { operation: SearchOpe
     <div className="p-3">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-xs font-medium text-fg-4 uppercase tracking-wider">Zone Status Board</h3>
-        <span className="text-xs text-fg-4">{zones.length} zones</span>
+        <span className="text-xs text-fg-4">{zones.length}{statusFilter !== "all" ? `/${rawZones.length}` : ""} zones</span>
       </div>
 
-      {zones.length === 0 ? (
+      {rawZones.length > 0 && (
+        <div className="mb-2.5 space-y-1.5">
+          {/* Sort controls */}
+          <div className="flex items-center gap-1 text-[10px]">
+            <ArrowUpDown size={10} className="text-fg-4" />
+            {(["priority", "name", "status", "pod"] as const).map((k) => (
+              <button
+                key={k}
+                onClick={() => toggleSort(k)}
+                className={`px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                  sortKey === k ? "bg-accent/20 text-accent" : "text-fg-4 hover:text-fg-2"
+                }`}
+              >
+                {k === "pod" ? "POD" : k}
+                {sortKey === k && <span className="ml-0.5">{sortDir === "asc" ? "↑" : "↓"}</span>}
+              </button>
+            ))}
+          </div>
+          {/* Status filter chips */}
+          <div className="flex items-center gap-1 text-[10px] flex-wrap">
+            <Filter size={10} className="text-fg-4" />
+            {(["all", "unassigned", "assigned", "in_progress", "complete", "suspended"] as const).map((f) => {
+              const count = statusCounts[f] || 0;
+              if (f !== "all" && count === 0) return null;
+              return (
+                <button
+                  key={f}
+                  onClick={() => setStatusFilter(f)}
+                  className={`px-1.5 py-0.5 rounded capitalize whitespace-nowrap ${
+                    statusFilter === f ? "bg-accent/20 text-accent" : "text-fg-4 hover:text-fg-2"
+                  }`}
+                >
+                  {f.replace(/_/g, " ")} <span className="text-fg-4">({count})</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {rawZones.length === 0 ? (
         <p className="text-xs text-fg-4 py-4 text-center">
           No zones yet. Use the Grid Generator to create search zones.
         </p>
+      ) : zones.length === 0 ? (
+        <p className="text-xs text-fg-4 py-4 text-center">No zones match the current filter.</p>
       ) : (
         <div className="space-y-1.5">
           {zones.map((z) => {
@@ -147,6 +222,9 @@ function ZoneDetail({
 }) {
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Local POD state so the slider/input stays responsive while the server
+  // round-trips. Reset on debounce-committed save.
+  const [podDraft, setPodDraft] = useState<number>(Math.round((zone.cumulative_pod || 0) * 100));
   const { setRightPanel } = useSearchStore();
 
   const handleUpdate = async (fields: Record<string, unknown>) => {
@@ -162,8 +240,62 @@ function ZoneDetail({
     }
   };
 
+  const commitPod = () => {
+    const next = Math.max(0, Math.min(100, podDraft));
+    if (Math.round((zone.cumulative_pod || 0) * 100) === next) return;
+    handleUpdate({ cumulative_pod: next / 100 });
+  };
+
   return (
     <div className="ml-4 mt-1 p-3 bg-surface-800/50 border border-surface-700 rounded text-xs space-y-3">
+      {/* Editable status + POD */}
+      <div className="grid grid-cols-2 gap-2 items-start">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-fg-4 uppercase tracking-wider">Status</span>
+          <select
+            value={zone.status}
+            onChange={(e) => handleUpdate({ status: e.target.value })}
+            disabled={updating}
+            className="px-2 py-1 bg-surface-700 border border-surface-600 rounded text-xs"
+          >
+            <option value="unassigned">Unassigned</option>
+            <option value="assigned">Assigned</option>
+            <option value="in_progress">In Progress</option>
+            <option value="complete">Complete</option>
+            <option value="suspended">Suspended</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-fg-4 uppercase tracking-wider">Cumulative POD ({podDraft}%)</span>
+          <div className="flex items-center gap-1.5">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={podDraft}
+              onChange={(e) => setPodDraft(Number(e.target.value))}
+              onMouseUp={commitPod}
+              onKeyUp={(e) => { if (e.key === "Enter" || e.key === "ArrowRight" || e.key === "ArrowLeft") commitPod(); }}
+              onTouchEnd={commitPod}
+              disabled={updating}
+              className="flex-1 accent-accent"
+            />
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={podDraft}
+              onChange={(e) => setPodDraft(Number(e.target.value))}
+              onBlur={commitPod}
+              onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+              disabled={updating}
+              className="w-12 px-1 py-0.5 bg-surface-700 border border-surface-600 rounded text-xs text-right"
+            />
+          </div>
+        </label>
+      </div>
+
       <div className="grid grid-cols-2 gap-2">
         <div>
           <span className="text-fg-4">Method:</span>{" "}
