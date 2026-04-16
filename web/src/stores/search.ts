@@ -55,6 +55,7 @@ interface SearchState {
   showAttractors: boolean;
   hazards: Array<{ kind: string; name: string; lat: number; lon: number }>;
   attractors: Array<{ kind: string; name: string; lat: number; lon: number }>;
+  hazardsHint: string | null;
   vehicleRoute: GeoJSON.LineString | null;
   vehicleRouteMeta: { distance_m: number; duration_s: number } | null;
 
@@ -99,6 +100,7 @@ interface SearchState {
   setShowHazards: (v: boolean) => void;
   setShowAttractors: (v: boolean) => void;
   setOsmFeatures: (h: SearchState["hazards"], a: SearchState["attractors"]) => void;
+  setHazardsHint: (h: string | null) => void;
   setVehicleRoute: (g: GeoJSON.LineString | null, meta: SearchState["vehicleRouteMeta"]) => void;
 }
 
@@ -133,6 +135,7 @@ export const useSearchStore = create<SearchState>((set) => ({
   showAttractors: false,
   hazards: [],
   attractors: [],
+  hazardsHint: null,
   vehicleRoute: null,
   vehicleRouteMeta: null,
 
@@ -196,5 +199,6 @@ export const useSearchStore = create<SearchState>((set) => ({
   setShowHazards: (v) => set({ showHazards: v }),
   setShowAttractors: (v) => set({ showAttractors: v }),
   setOsmFeatures: (hazards, attractors) => set({ hazards, attractors }),
+  setHazardsHint: (h) => set({ hazardsHint: h }),
   setVehicleRoute: (g, meta) => set({ vehicleRoute: g, vehicleRouteMeta: meta }),
 }));

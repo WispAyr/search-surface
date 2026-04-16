@@ -25,6 +25,7 @@ import {
   Radar,
   Wind,
   Thermometer,
+  Droplets,
 } from "lucide-react";
 import { HelpPanel } from "./HelpPanel";
 
@@ -53,8 +54,11 @@ interface OperationHeaderProps {
 }
 
 export function OperationHeader({ operation, onBack, onRefresh }: OperationHeaderProps) {
-  const { toggleGridGenerator, togglePODCalculator, toggleExportPanel, toggleSitrepPanel, toggleAirspace, showAirspace, setAddingDatum, setRightPanel, setMobilePanelOpen } =
-    useSearchStore();
+  const {
+    toggleGridGenerator, togglePODCalculator, toggleExportPanel, toggleSitrepPanel,
+    toggleAirspace, showAirspace, setAddingDatum, setRightPanel, setMobilePanelOpen,
+    showHazards, setShowHazards, setShowAttractors, hazardsHint,
+  } = useSearchStore();
   const [statusLoading, setStatusLoading] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [wx, setWx] = useState<{ metar: any; storm: any } | null>(null);
@@ -217,6 +221,22 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
         </button>
         <button onClick={toggleAirspace} className={`p-1.5 transition ${showAirspace ? "text-accent" : "text-fg-4 hover:text-accent"}`} title="UK Airspace Restrictions">
           <Plane size={16} />
+        </button>
+        <button
+          onClick={() => {
+            const next = !showHazards;
+            setShowHazards(next);
+            // Mirror attractors so the toggle feels like one control; users
+            // can still split them via the SAR Tools panel if they want.
+            setShowAttractors(next);
+          }}
+          className={`p-1.5 transition relative ${showHazards ? "text-accent" : "text-fg-4 hover:text-accent"}`}
+          title={hazardsHint || "Terrain & water hazards (OSM) — auto-loads for current map view"}
+        >
+          <Droplets size={16} />
+          {showHazards && hazardsHint && (
+            <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400" />
+          )}
         </button>
         <button
           onClick={() => { setRightPanel("sar"); setMobilePanelOpen(true); }}

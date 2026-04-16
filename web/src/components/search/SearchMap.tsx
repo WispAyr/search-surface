@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, GeoJSON, Marker, Popup, Circle, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import { useSearchStore } from "@/stores/search";
+import { searchHelpers } from "@/lib/api";
 import { AirspaceLayer } from "./AirspaceLayer";
 import { SarOverlays } from "./SarOverlays";
 import type { SearchOperation, SearchZone, SearchDatum } from "@/types/search";
@@ -227,6 +228,11 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
       {/* SAR overlays (LPB rings, travel circles, hazards, route) */}
       <SarOverlays datumLat={anchorLat} datumLon={anchorLon} />
 
+      {/* Hazards/attractors auto-loader — driven by map viewport when the
+          Hazards toggle is on in the header */}
+      <HazardsAutoLoader />
+
+
       {/* Click-to-set-datum handler */}
       {settingDatum && onDatumSet && (
         <DatumClickHandler onSet={(lat, lon) => {
@@ -354,6 +360,72 @@ function FitBounds({ operation }: { operation: SearchOperation }) {
       fittedRef.current = true;
     }
   }, [operation.zones?.length, operation.datum_lat, operation.datum_lon, map]);
+
+  return null;
+}
+
+// Watches the Hazards toggle + map viewport. When enabled, fetches OSM
+// hazards/attractors for the current bounds via siphon's OSM endpoint and
+// refetches (debounced) after pan/zoom. Large viewports (> ~20km span) are
+// skipped to avoid punishing the Overpass proxy — a small banner is shown
+// asking the user to zoom in via the store's hazardsHint flag.
+function HazardsAutoLoader() {
+  const map = useMap();
+  const { showHazards, showAttractors, setOsmFeatures, setHazardsHint } = useSearchStore();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastKeyRef = useRef<string>("");
+
+  const active = showHazards || showAttractors;
+
+  useEffect(() => {
+    if (!active) {
+      setHazardsHint(null);
+      return;
+    }
+
+    const fetchBounds = async () => {
+      const b = map.getBounds();
+      const south = b.getSouth();
+      const west = b.getWest();
+      const north = b.getNorth();
+      const east = b.getEast();
+
+      // Rough span in km. Overpass struggles past ~20km on foot-level hazards.
+      const latSpanKm = (north - south) * 111;
+      const lonSpanKm = (east - west) * 111 * Math.cos(((north + south) / 2) * Math.PI / 180);
+      const maxSpanKm = Math.max(latSpanKm, lonSpanKm);
+      if (maxSpanKm > 20) {
+        setHazardsHint(`Zoom in to load hazards (current view ~${Math.round(maxSpanKm)} km)`);
+        return;
+      }
+
+      // Dedup by bbox key — map.invalidateSize fires moveend too, don't re-fetch identically.
+      const key = `${south.toFixed(3)}|${west.toFixed(3)}|${north.toFixed(3)}|${east.toFixed(3)}`;
+      if (key === lastKeyRef.current) return;
+      lastKeyRef.current = key;
+
+      setHazardsHint("Loading…");
+      try {
+        const d = await searchHelpers.osmFeatures([south, west, north, east]);
+        setOsmFeatures(d.hazards, d.attractors);
+        setHazardsHint(null);
+      } catch (e) {
+        setHazardsHint("Hazard fetch failed");
+      }
+    };
+
+    const trigger = () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(fetchBounds, 700);
+    };
+
+    trigger();
+    map.on("moveend", trigger);
+    return () => {
+      map.off("moveend", trigger);
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [active, map, setOsmFeatures, setHazardsHint]);
 
   return null;
 }
