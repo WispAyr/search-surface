@@ -6,7 +6,7 @@ import type { SearchOperation } from "@/types/search";
 import {
   Sun, Moon, Cloud, CloudRain, Wind, Thermometer, Eye, Droplets,
   Clock, AlertTriangle, ChevronDown, ChevronUp, Compass, Timer,
-  Snowflake, Zap, Dog, Gauge, Mountain, ArrowDown, ArrowUp,
+  Snowflake, Zap, Dog, Gauge, Mountain, ArrowDown, ArrowUp, Radio, Activity,
 } from "lucide-react";
 
 interface ConditionsData {
@@ -81,7 +81,7 @@ export function SearchConditions({ operation }: { operation: SearchOperation }) 
   const [data, setData] = useState<ConditionsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    light: true, weather: true, scent: true, survival: true, drone: true, forecast: false, detail: false,
+    light: true, weather: true, storm: true, scent: true, survival: true, drone: true, forecast: false, detail: false,
   });
 
   useEffect(() => {
@@ -224,6 +224,13 @@ export function SearchConditions({ operation }: { operation: SearchOperation }) 
         )}
       </Section>
 
+      {/* ── STORM INTELLIGENCE (Prism lenses) ── */}
+      {(data.stormWatch?.data || data.windConsensus?.data) && (
+        <Section title="Storm Intelligence" icon={<Activity size={12} />} open={expanded.storm} toggle={() => toggle("storm")}>
+          <StormIntelligence stormWatch={data.stormWatch?.data} windConsensus={data.windConsensus?.data} />
+        </Section>
+      )}
+
       {/* ── K9 / SCENT CONDITIONS ── */}
       {scent && (
         <Section title="K9 Scent Conditions" icon={<Dog size={12} />} open={expanded.scent} toggle={() => toggle("scent")}>
@@ -338,6 +345,96 @@ function DroneConditions({ windSpeed, windGust, visibility, precipitation, cloud
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── Storm Intelligence (Prism lenses) ──
+
+function StormIntelligence({ stormWatch, windConsensus }: { stormWatch?: any; windConsensus?: any }) {
+  // Storm verdict colour mapping: settled → green, watching/partial → amber, warning/severe → red
+  const stormVerdict = stormWatch?.verdict || "unknown";
+  const stormScore = typeof stormWatch?.score === "number" ? stormWatch.score : null;
+  const stormAlert = stormScore != null && stormScore >= 0.6 ? "critical" : stormScore != null && stormScore >= 0.3 ? "warn" : undefined;
+  const stormColor = stormAlert === "critical" ? "text-red-400" : stormAlert === "warn" ? "text-amber-400" : "text-green-400";
+
+  const windVerdict = windConsensus?.verdict || "unknown";
+  const windAgree = windVerdict === "strong_agree" || windVerdict === "mostly_agree";
+  const windColor = windVerdict === "disagree" ? "text-red-400" : windVerdict === "mostly_agree" ? "text-amber-400" : windAgree ? "text-green-400" : "text-fg-3";
+  const dirScore = typeof windConsensus?.direction_score === "number" ? windConsensus.direction_score : null;
+
+  return (
+    <div className="space-y-2">
+      {stormWatch && (
+        <div className="border border-surface-700 rounded p-2">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={11} className={stormColor} />
+              <span className="text-xs text-fg-2">Storm Watch</span>
+            </div>
+            <span className={`text-xs font-semibold uppercase ${stormColor}`}>{stormVerdict.replace(/_/g, " ")}</span>
+          </div>
+          {stormWatch.descriptor && <div className="text-[10px] text-fg-3 mb-1.5">{stormWatch.descriptor}</div>}
+          <div className="grid grid-cols-3 gap-1.5">
+            {stormScore != null && <Stat label="Score" value={stormScore.toFixed(2)} sub="0 calm → 1 severe" alert={stormAlert} />}
+            {typeof stormWatch.pressure_tendency_3h_hpa === "number" && (
+              <Stat
+                label="ΔPressure 3h"
+                value={`${stormWatch.pressure_tendency_3h_hpa > 0 ? "+" : ""}${stormWatch.pressure_tendency_3h_hpa.toFixed(1)} hPa`}
+                icon={stormWatch.pressure_tendency_3h_hpa < -3 ? <ArrowDown size={9} className="text-red-400" /> : stormWatch.pressure_tendency_3h_hpa > 2 ? <ArrowUp size={9} /> : undefined}
+                alert={stormWatch.pressure_tendency_3h_hpa < -3 ? "warn" : undefined}
+              />
+            )}
+            {typeof stormWatch.wind_rotation_3h_deg === "number" && (
+              <Stat label="Wind veer 3h" value={`${stormWatch.wind_rotation_3h_deg > 0 ? "+" : ""}${stormWatch.wind_rotation_3h_deg.toFixed(0)}°`} />
+            )}
+          </div>
+          {stormAlert === "critical" && (
+            <Alert level="critical">Storm indicators elevated — review wind/precip forecast before deploying foot teams.</Alert>
+          )}
+          {stormAlert === "warn" && (
+            <Alert level="warn">Weather watching — conditions may deteriorate. Monitor next refresh.</Alert>
+          )}
+        </div>
+      )}
+
+      {windConsensus && (
+        <div className="border border-surface-700 rounded p-2">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-2">
+              <Radio size={11} className={windColor} />
+              <span className="text-xs text-fg-2">Wind Consensus</span>
+            </div>
+            <span className={`text-xs font-semibold uppercase ${windColor}`}>{windVerdict.replace(/_/g, " ")}</span>
+          </div>
+          {windConsensus.descriptor && <div className="text-[10px] text-fg-3 mb-1.5">{windConsensus.descriptor}</div>}
+          <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+            {typeof windConsensus.metar_from_deg === "number" && (
+              <div className="p-1.5 rounded border border-surface-600">
+                <div className="text-fg-4">Surface (METAR)</div>
+                <div className="text-fg-1 font-medium">
+                  {windDir(windConsensus.metar_from_deg)} {Math.round(windConsensus.metar_from_deg)}° · {Math.round(windConsensus.metar_speed_kt ?? 0)} kt
+                </div>
+                {windConsensus.metar_stations && <div className="text-fg-4">{windConsensus.metar_stations} stns</div>}
+              </div>
+            )}
+            {typeof windConsensus.geostrophic_from_deg === "number" && (
+              <div className="p-1.5 rounded border border-surface-600">
+                <div className="text-fg-4">Upper (geostrophic)</div>
+                <div className="text-fg-1 font-medium">
+                  {windDir(windConsensus.geostrophic_from_deg)} {Math.round(windConsensus.geostrophic_from_deg)}° · {Math.round(windConsensus.geostrophic_speed_kt ?? 0)} kt
+                </div>
+                {dirScore != null && <div className="text-fg-4">dir score {(dirScore * 100).toFixed(0)}%</div>}
+              </div>
+            )}
+          </div>
+          {windVerdict === "disagree" && (
+            <Alert level="warn">Surface and upper winds diverge — likely frontal boundary or turbulence aloft. Drone ops caution.</Alert>
+          )}
+        </div>
+      )}
+
+      <div className="text-[9px] text-fg-4 pt-1">Source: Prism storm-watch + wind-consensus lenses · refreshes 2 min</div>
     </div>
   );
 }

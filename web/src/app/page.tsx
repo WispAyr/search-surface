@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { search } from "@/lib/api";
 import { useSearchStore } from "@/stores/search";
 import { useSearchOperations } from "@/hooks/useSearchData";
-import type { OperationType } from "@/types/search";
+import type { OperationType, SearchOperation } from "@/types/search";
 import { IncidentWizard } from "@/components/search/IncidentWizard";
 import { HelpPanel } from "@/components/search/HelpPanel";
 import {

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { search } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { search, siphon, prism } from "@/lib/api";
 import { useSearchStore } from "@/stores/search";
 import type { SearchOperation } from "@/types/search";
 import {
@@ -22,8 +22,13 @@ import {
   MapPin,
   HelpCircle,
   Radar,
+  Wind,
+  Thermometer,
 } from "lucide-react";
 import { HelpPanel } from "./HelpPanel";
+
+const WIND_DIRS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+const windDirLabel = (deg: number) => WIND_DIRS[Math.round(deg / 22.5) % 16];
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
   missing_person: <AlertTriangle size={16} className="text-red-400" />,
@@ -51,6 +56,27 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
     useSearchStore();
   const [statusLoading, setStatusLoading] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [wx, setWx] = useState<{ metar: any; storm: any } | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    async function load() {
+      try {
+        const [metar, storm] = await Promise.allSettled([
+          siphon.metar("EGPK"),
+          prism.stormWatch("ayrshire"),
+        ]);
+        if (!mounted) return;
+        setWx({
+          metar: metar.status === "fulfilled" ? (metar.value as any)?.data || metar.value : null,
+          storm: storm.status === "fulfilled" ? (storm.value as any)?.data || storm.value : null,
+        });
+      } catch {}
+    }
+    load();
+    const iv = setInterval(load, 120000);
+    return () => { mounted = false; clearInterval(iv); };
+  }, []);
 
   const handleStatus = async (status: string) => {
     setStatusLoading(true);
@@ -92,8 +118,8 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
         </div>
       </div>
 
-      {/* Center: stats strip */}
-      <div className="flex items-center gap-4 text-xs text-fg-3 shrink-0">
+      {/* Center: stats strip — desktop only */}
+      <div className="hidden lg:flex items-center gap-4 text-xs text-fg-3 shrink-0">
         <div>
           <span className="text-fg-4">Zones:</span>{" "}
           <span className="text-fg-1">{complete}/{zones.length}</span>{" "}
@@ -111,6 +137,7 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
           <span className="text-fg-1">{deployed}/{teams.length}</span>{" "}
           <span className="text-fg-4">deployed</span>
         </div>
+        <WeatherChip wx={wx} onClick={() => { setRightPanel("conditions"); setMobilePanelOpen(true); }} />
         {operation.subject_info?.name && (
           <div className="border-l border-surface-600 pl-4">
             <span className="text-fg-4">Subject:</span>{" "}
@@ -207,5 +234,50 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
       </div>
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
     </header>
+  );
+}
+
+function WeatherChip({ wx, onClick }: { wx: { metar: any; storm: any } | null; onClick: () => void }) {
+  if (!wx?.metar && !wx?.storm) return null;
+  const m = wx.metar || {};
+  const s = wx.storm || {};
+  const wind = typeof m.wind_speed === "number" ? `${windDirLabel(m.wind_direction)} ${Math.round(m.wind_speed)}${m.wind_unit || "kt"}` : null;
+  const gust = typeof m.wind_gust === "number" ? m.wind_gust : null;
+  const temp = typeof m.temperature_c === "number" ? `${Math.round(m.temperature_c)}°` : null;
+  const vis = typeof m.visibility_m === "number" ? (m.visibility_m >= 10000 ? "10km+" : m.visibility_m >= 1000 ? `${(m.visibility_m / 1000).toFixed(1)}km` : `${m.visibility_m}m`) : null;
+
+  // Storm score colour: 0-0.3 green, 0.3-0.6 amber, >0.6 red
+  const score = typeof s.score === "number" ? s.score : null;
+  const stormCls = score == null ? "" : score >= 0.6 ? "border-red-500/50 bg-red-500/10" : score >= 0.3 ? "border-amber-500/50 bg-amber-500/10" : "";
+  const windAlert = gust != null && gust > 35 ? "text-red-300" : (typeof m.wind_speed === "number" && m.wind_speed > 25) ? "text-amber-300" : "text-fg-1";
+
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2 px-2 py-1 rounded border border-surface-600 hover:border-accent/50 transition ${stormCls}`}
+      title={s.descriptor ? `${s.verdict}: ${s.descriptor}` : "Open conditions panel"}
+    >
+      {wind && (
+        <span className={`flex items-center gap-1 ${windAlert}`}>
+          <Wind size={11} />
+          {wind}{gust ? `g${Math.round(gust)}` : ""}
+        </span>
+      )}
+      {temp && (
+        <span className="flex items-center gap-1 text-fg-2 border-l border-surface-600 pl-2">
+          <Thermometer size={11} />{temp}
+        </span>
+      )}
+      {vis && (
+        <span className="flex items-center gap-1 text-fg-3 border-l border-surface-600 pl-2">
+          <Eye size={11} />{vis}
+        </span>
+      )}
+      {score != null && score >= 0.3 && (
+        <span className="flex items-center gap-1 text-amber-300 border-l border-surface-600 pl-2">
+          <AlertTriangle size={11} />{s.verdict || "watch"}
+        </span>
+      )}
+    </button>
   );
 }

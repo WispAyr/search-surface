@@ -116,11 +116,11 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
         <div
           className={`${mobilePanelOpen ? "flex" : "hidden"} md:flex absolute md:relative inset-0 md:inset-auto w-full md:w-[420px] md:border-l border-surface-700 flex-col overflow-hidden z-[1100] md:z-[1000] bg-surface-900`}
         >
-          {/* Panel tabs */}
-          <div className="flex border-b border-surface-700 text-xs">
+          {/* Panel tabs — horizontal scroll on narrow widths to avoid cramming */}
+          <div className="flex border-b border-surface-700 text-xs overflow-x-auto scrollbar-thin">
             <button
               onClick={() => setMobilePanelOpen(false)}
-              className="md:hidden px-3 py-2.5 text-fg-3 hover:text-fg-1 border-r border-surface-700"
+              className="md:hidden shrink-0 px-3 py-2.5 text-fg-3 hover:text-fg-1 border-r border-surface-700"
               aria-label="Back to map"
             >
               <MapIcon size={14} />
@@ -129,7 +129,7 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
               <button
                 key={tab}
                 onClick={() => setRightPanel(tab)}
-                className={`flex-1 px-3 py-2.5 capitalize transition ${
+                className={`shrink-0 px-3 py-2.5 capitalize whitespace-nowrap transition ${
                   rightPanel === tab
                     ? "text-accent border-b-2 border-accent bg-surface-800"
                     : "text-fg-4 hover:text-fg-2"
