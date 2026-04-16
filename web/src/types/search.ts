@@ -93,6 +93,9 @@ export interface SearchTeam {
   last_lat: number | null;
   last_lon: number | null;
   last_position_at: string | null;
+  // Set when status flips into deployed/returning, cleared when it leaves.
+  // Used by fatigue alarm (isTeamFatigued helper).
+  deployed_at: string | null;
   created_at: string;
   // Populated when the team is assigned to a zone — see server/routes/search.js
   // buildTeamAssignment. Checklist is street names from OSM; route is an OSRM

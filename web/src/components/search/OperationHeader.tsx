@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { search, siphon, prism } from "@/lib/api";
 import { useSearchStore } from "@/stores/search";
-import { isTeamSilent, SILENT_THRESHOLD_MIN } from "@/lib/teamStatus";
+import { isTeamSilent, isTeamFatigued, SILENT_THRESHOLD_MIN, FATIGUE_THRESHOLD_MIN } from "@/lib/teamStatus";
 import type { SearchOperation } from "@/types/search";
 import {
   ArrowLeft,
@@ -26,6 +26,7 @@ import {
   Wind,
   Thermometer,
   Droplets,
+  Clock,
 } from "lucide-react";
 import { HelpPanel } from "./HelpPanel";
 
@@ -107,6 +108,8 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
       : 0;
   const deployed = teams.filter((t) => t.status === "deployed").length;
   const silentTeams = teams.filter(isTeamSilent).length;
+  const fatiguedTeams = teams.filter(isTeamFatigued).length;
+  const subjectPhoto = operation.subject_info?.photo_url;
 
   return (
     <header className="border-b border-surface-700 bg-surface-800 px-4 py-2.5 flex items-center justify-between gap-4">
@@ -115,6 +118,14 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
         <button onClick={onBack} className="text-fg-4 hover:text-fg-1 transition shrink-0">
           <ArrowLeft size={18} />
         </button>
+        {subjectPhoto && (
+          <img
+            src={subjectPhoto}
+            alt={operation.subject_info?.name || "Subject"}
+            className="w-8 h-8 rounded object-cover border border-surface-600 shrink-0"
+            title={operation.subject_info?.name || "Subject"}
+          />
+        )}
         <div className="flex items-center gap-2 min-w-0">
           {TYPE_ICONS[operation.type]}
           <h1 className="font-semibold truncate">{operation.name}</h1>
@@ -151,6 +162,16 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
           >
             <AlertTriangle size={11} />
             {silentTeams} silent
+          </button>
+        )}
+        {fatiguedTeams > 0 && (
+          <button
+            onClick={() => { setRightPanel("teams"); setMobilePanelOpen(true); }}
+            className="flex items-center gap-1 px-2 py-0.5 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 rounded text-amber-300 text-xs"
+            title={`${fatiguedTeams} team${fatiguedTeams > 1 ? "s" : ""} deployed > ${FATIGUE_THRESHOLD_MIN / 60}h — consider rotation`}
+          >
+            <Clock size={11} />
+            {fatiguedTeams} fatigued
           </button>
         )}
         <WeatherChip wx={wx} onClick={() => { setRightPanel("conditions"); setMobilePanelOpen(true); }} />

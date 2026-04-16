@@ -137,6 +137,9 @@ for (const col of [
   'street_checklist TEXT',
   'vehicle_route_geometry TEXT',
   'vehicle_route_meta TEXT',
+  // Timestamp of most recent deploy → used for fatigue alarm (4h rest
+  // threshold). Cleared whenever status leaves 'deployed'/'returning'.
+  'deployed_at TEXT',
 ]) {
   try { db.exec(`ALTER TABLE search_teams ADD COLUMN ${col}`); } catch { /* already present */ }
 }
@@ -381,6 +384,21 @@ const teams = {
       } else {
         sets.push(`${k} = ?`);
         vals.push(v);
+      }
+    }
+    // Track deployment clock for fatigue alarm. Set when flipping TO deployed
+    // (if not already set), clear when leaving deployed/returning. Untouched
+    // if status isn't in the update — avoids resetting on unrelated edits.
+    if (Object.prototype.hasOwnProperty.call(fields, 'status')) {
+      const nextStatus = fields.status;
+      const wasActive = t.status === 'deployed' || t.status === 'returning';
+      const willBeActive = nextStatus === 'deployed' || nextStatus === 'returning';
+      if (willBeActive && !wasActive) {
+        sets.push('deployed_at = ?');
+        vals.push(now());
+      } else if (!willBeActive && wasActive) {
+        sets.push('deployed_at = ?');
+        vals.push(null);
       }
     }
     if (!sets.length) return t;

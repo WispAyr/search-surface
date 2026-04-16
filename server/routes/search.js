@@ -189,6 +189,21 @@ router.post('/operations/:id/activate', requireSearchAdmin, (req, res) => {
   res.json(op);
 });
 
+// Subject photo upload. Returns { photo_url } and also merges it into the
+// operation's subject_info so the brief/print view and operation header can
+// render it without an extra round-trip.
+router.post('/operations/:id/subject/photo', requireSearchAdmin, upload.single('photo'), (req, res) => {
+  const op = operations.get(req.params.id);
+  if (!op) return res.status(404).json({ error: 'Operation not found' });
+  if (!req.file) return res.status(400).json({ error: 'No photo uploaded' });
+  const photoUrl = `/api/search/uploads/${req.file.filename}`;
+  const subjectInfo = { ...(op.subject_info || {}), photo_url: photoUrl };
+  const updated = operations.update(req.params.id, { subject_info: subjectInfo });
+  audit.log(req.params.id, 'operator', 'subject_photo_uploaded', { photo_url: photoUrl });
+  broadcast(req.params.id, { type: 'operation_updated', data: { id: req.params.id, subject_info: subjectInfo } });
+  res.status(201).json({ photo_url: photoUrl, operation: updated });
+});
+
 // ── SSE Stream ──
 router.get('/operations/:id/stream', (req, res) => {
   const opId = req.params.id;

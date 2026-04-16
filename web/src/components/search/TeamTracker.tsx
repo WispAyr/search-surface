@@ -3,9 +3,9 @@
 import { useMemo, useState } from "react";
 import { search } from "@/lib/api";
 import { useSearchStore } from "@/stores/search";
-import { isTeamSilent, SILENT_THRESHOLD_MIN } from "@/lib/teamStatus";
+import { isTeamSilent, isTeamFatigued, teamDeploymentMinutes, SILENT_THRESHOLD_MIN, FATIGUE_THRESHOLD_MIN } from "@/lib/teamStatus";
 import type { SearchOperation, SearchTeam } from "@/types/search";
-import { Plus, MapPin, Clock, Copy, Radio, UserPlus, QrCode, AlertTriangle, ArrowUpDown } from "lucide-react";
+import { Plus, MapPin, Clock, Copy, Radio, UserPlus, QrCode, AlertTriangle, ArrowUpDown, Timer } from "lucide-react";
 
 const STATUS_BADGE: Record<string, { bg: string; label: string }> = {
   standby: { bg: "bg-surface-600 text-fg-4", label: "Standby" },
@@ -45,6 +45,7 @@ export function TeamTracker({ operation, onRefresh }: { operation: SearchOperati
   };
 
   const silentCount = useMemo(() => rawTeams.filter(isTeamSilent).length, [rawTeams]);
+  const fatiguedCount = useMemo(() => rawTeams.filter(isTeamFatigued).length, [rawTeams]);
 
   return (
     <div className="p-3">
@@ -63,6 +64,14 @@ export function TeamTracker({ operation, onRefresh }: { operation: SearchOperati
           <AlertTriangle size={12} />
           <span>
             {silentCount} deployed team{silentCount > 1 ? "s" : ""} silent &gt; {SILENT_THRESHOLD_MIN}min — request checkin.
+          </span>
+        </div>
+      )}
+      {fatiguedCount > 0 && (
+        <div className="mb-2 px-2 py-1.5 rounded bg-amber-500/10 border border-amber-500/30 flex items-center gap-2 text-xs text-amber-300">
+          <Timer size={12} />
+          <span>
+            {fatiguedCount} team{fatiguedCount > 1 ? "s" : ""} deployed &gt; {FATIGUE_THRESHOLD_MIN / 60}h — rotate or rest.
           </span>
         </div>
       )}
@@ -125,6 +134,11 @@ function TeamCard({ team }: { team: SearchTeam }) {
     ? Math.round((Date.now() - new Date(team.last_position_at).getTime()) / 60000)
     : null;
   const silent = isTeamSilent(team);
+  const fatigued = isTeamFatigued(team);
+  const deploymentMin = teamDeploymentMinutes(team);
+  const deploymentLabel = deploymentMin != null
+    ? deploymentMin >= 60 ? `${Math.floor(deploymentMin / 60)}h ${deploymentMin % 60}m` : `${deploymentMin}m`
+    : null;
 
   return (
     <div
@@ -133,7 +147,9 @@ function TeamCard({ team }: { team: SearchTeam }) {
           ? "bg-accent/10 border-accent/30"
           : silent
             ? "bg-red-500/5 border-red-500/40 hover:border-red-500/60"
-            : "bg-surface-800 border-surface-700 hover:border-surface-600"
+            : fatigued
+              ? "bg-amber-500/5 border-amber-500/40 hover:border-amber-500/60"
+              : "bg-surface-800 border-surface-700 hover:border-surface-600"
       }`}
       onClick={() => selectTeam(isSelected ? null : team.id)}
     >
@@ -147,19 +163,29 @@ function TeamCard({ team }: { team: SearchTeam }) {
               <AlertTriangle size={10} /> SILENT
             </span>
           )}
+          {fatigued && !silent && (
+            <span className="flex items-center gap-0.5 text-[10px] text-amber-300 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/40">
+              <Timer size={10} /> FATIGUED
+            </span>
+          )}
         </div>
         <span className={`px-1.5 py-0.5 rounded text-[10px] ${STATUS_BADGE[team.status].bg}`}>
           {STATUS_BADGE[team.status].label}
         </span>
       </div>
 
-      <div className="mt-2 flex items-center gap-3 text-xs text-fg-4">
+      <div className="mt-2 flex items-center gap-3 text-xs text-fg-4 flex-wrap">
         <span className="flex items-center gap-1">
           <UserPlus size={10} /> {team.members?.length || 0} members
         </span>
         <span className="flex items-center gap-1">
           <Radio size={10} /> {team.capability}
         </span>
+        {deploymentLabel && (
+          <span className={`flex items-center gap-1 ${fatigued ? "text-amber-300 font-medium" : deploymentMin! > FATIGUE_THRESHOLD_MIN * 0.75 ? "text-amber-400" : ""}`}>
+            <Timer size={10} /> {deploymentLabel} deployed
+          </span>
+        )}
         {team.last_lat ? (
           <span className="flex items-center gap-1">
             <MapPin size={10} />

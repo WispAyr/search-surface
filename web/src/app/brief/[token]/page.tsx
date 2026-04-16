@@ -125,16 +125,25 @@ export default function BriefPage({ params }: { params: Promise<{ token: string 
             </div>
           </div>
 
-          {op.subject_info && (op.subject_info.name || op.subject_info.description) && (
-            <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded text-sm">
-              <div className="text-[10px] uppercase tracking-wider text-red-700 font-semibold mb-1 flex items-center gap-1">
-                <AlertTriangle size={11} /> Subject
+          {op.subject_info && (op.subject_info.name || op.subject_info.description || op.subject_info.photo_url) && (
+            <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded text-sm flex gap-3">
+              {op.subject_info.photo_url && (
+                <img
+                  src={op.subject_info.photo_url}
+                  alt={op.subject_info.name || "Subject"}
+                  className="w-24 h-24 md:w-28 md:h-28 object-cover rounded border border-red-200 shrink-0"
+                />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] uppercase tracking-wider text-red-700 font-semibold mb-1 flex items-center gap-1">
+                  <AlertTriangle size={11} /> Subject
+                </div>
+                <div>
+                  {op.subject_info.name && <span className="font-semibold">{op.subject_info.name}</span>}
+                  {op.subject_info.age && <span className="text-gray-700">, {op.subject_info.age} y/o</span>}
+                </div>
+                {op.subject_info.description && <div className="text-gray-700 text-xs mt-1 whitespace-pre-wrap break-words">{op.subject_info.description}</div>}
               </div>
-              <div>
-                {op.subject_info.name && <span className="font-semibold">{op.subject_info.name}</span>}
-                {op.subject_info.age && <span className="text-gray-700">, {op.subject_info.age} y/o</span>}
-              </div>
-              {op.subject_info.description && <div className="text-gray-700 text-xs mt-1">{op.subject_info.description}</div>}
             </div>
           )}
         </div>

@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import { search } from "@/lib/api";
+import { useRef, useState } from "react";
+import { search, getAdminToken } from "@/lib/api";
 import { useEscapeKey } from "@/hooks/useEscapeKey";
 import type { OperationType, SearchOperation, DatumKind } from "@/types/search";
-import { AlertTriangle, Shield, Users, Eye, MapPin, ChevronLeft, ChevronRight, Plus, Trash2, X, Check, Info } from "lucide-react";
+import { AlertTriangle, Shield, Users, Eye, MapPin, ChevronLeft, ChevronRight, Plus, Trash2, X, Check, Info, Camera } from "lucide-react";
 import { LocationLookup } from "./LocationLookup";
 
 interface Draft {
@@ -13,6 +13,9 @@ interface Draft {
   subjectName: string;
   subjectAge: string;
   subjectDesc: string;
+  // Held locally until after the op is created (needs op ID for upload).
+  subjectPhoto: File | null;
+  subjectPhotoPreview: string | null;
   primaryLat: string;
   primaryLon: string;
   primaryLabel: string;
@@ -51,6 +54,8 @@ export function IncidentWizard({
     subjectName: "",
     subjectAge: "",
     subjectDesc: "",
+    subjectPhoto: null,
+    subjectPhotoPreview: null,
     primaryLat: "",
     primaryLon: "",
     primaryLabel: "Last known position",
@@ -59,8 +64,20 @@ export function IncidentWizard({
   });
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
 
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft((d) => ({ ...d, [k]: v }));
+
+  const pickPhoto = (file: File | null) => {
+    setDraft((d) => {
+      if (d.subjectPhotoPreview) URL.revokeObjectURL(d.subjectPhotoPreview);
+      return {
+        ...d,
+        subjectPhoto: file,
+        subjectPhotoPreview: file ? URL.createObjectURL(file) : null,
+      };
+    });
+  };
 
   const totalSteps = 4;
   const canAdvance = (() => {
@@ -111,6 +128,24 @@ export function IncidentWizard({
 
       const op = (await search.createOperation(body)) as SearchOperation;
 
+      // Upload subject photo if present (best effort — op exists either way).
+      if (draft.subjectPhoto) {
+        try {
+          const form = new FormData();
+          form.append("photo", draft.subjectPhoto);
+          const adminToken = getAdminToken();
+          const resp = await fetch(`/api/search/operations/${op.id}/subject/photo`, {
+            method: "POST",
+            body: form,
+            headers: adminToken ? { "X-Search-Admin": adminToken } : undefined,
+          });
+          if (resp.ok) {
+            const { photo_url } = await resp.json();
+            op.subject_info = { ...(op.subject_info || { name: "" }), photo_url };
+          }
+        } catch {}
+      }
+
       // Add secondary datums (best effort)
       for (const sd of draft.secondaryDatums) {
         if (!sd.lat || !sd.lon) continue;
@@ -128,6 +163,7 @@ export function IncidentWizard({
         } catch {}
       }
 
+      if (draft.subjectPhotoPreview) URL.revokeObjectURL(draft.subjectPhotoPreview);
       onCreated(op);
     } catch (err: any) {
       setError(err?.message || "Failed to create operation");
@@ -246,6 +282,50 @@ export function IncidentWizard({
                   placeholder="e.g. Male, 180cm, red jacket, navy jeans, walking stick. Known to head toward beach."
                   className="w-full px-3 py-2 bg-surface-700 border border-surface-600 rounded text-sm resize-none focus:outline-none focus:border-accent"
                 />
+              </div>
+              <div>
+                <label className="block text-xs text-fg-4 mb-1">Photo (shown on briefing + share link)</label>
+                <input
+                  ref={photoInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => pickPhoto(e.target.files?.[0] || null)}
+                />
+                <div className="flex items-start gap-3">
+                  {draft.subjectPhotoPreview ? (
+                    <img
+                      src={draft.subjectPhotoPreview}
+                      alt="Subject preview"
+                      className="w-24 h-24 object-cover rounded border border-surface-600"
+                    />
+                  ) : (
+                    <div className="w-24 h-24 rounded border border-dashed border-surface-600 flex items-center justify-center text-fg-4">
+                      <Camera size={20} />
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => photoInputRef.current?.click()}
+                      className="px-3 py-1.5 text-xs bg-surface-700 hover:bg-surface-600 border border-surface-600 rounded"
+                    >
+                      {draft.subjectPhoto ? "Replace photo" : "Upload photo"}
+                    </button>
+                    {draft.subjectPhoto && (
+                      <button
+                        type="button"
+                        onClick={() => pickPhoto(null)}
+                        className="px-3 py-1.5 text-xs text-red-300 hover:text-red-200"
+                      >
+                        Remove
+                      </button>
+                    )}
+                    {draft.subjectPhoto && (
+                      <div className="text-[10px] text-fg-4">{draft.subjectPhoto.name} · {(draft.subjectPhoto.size / 1024).toFixed(0)}kB</div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           )}
