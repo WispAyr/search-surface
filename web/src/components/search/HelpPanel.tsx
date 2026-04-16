@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useEscapeKey } from "@/hooks/useEscapeKey";
 import {
   X,
   HelpCircle,
@@ -215,6 +216,7 @@ function Badge({ color, children }: { color: string; children: React.ReactNode }
 export function HelpPanel({ onClose }: { onClose: () => void }) {
   const [activeId, setActiveId] = useState<string>("overview");
   const active = SECTIONS.find((s) => s.id === activeId) || SECTIONS[0];
+  useEscapeKey(onClose);
 
   return (
     <div className="fixed inset-0 z-[2000] bg-black/60 backdrop-blur-sm flex items-stretch md:items-center justify-center">

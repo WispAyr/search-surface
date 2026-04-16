@@ -8,6 +8,7 @@ import { useSearchOperations } from "@/hooks/useSearchData";
 import type { OperationType, SearchOperation } from "@/types/search";
 import { IncidentWizard } from "@/components/search/IncidentWizard";
 import { HelpPanel } from "@/components/search/HelpPanel";
+import { OperatorLogin } from "@/components/search/OperatorLogin";
 import {
   Search,
   Plus,
@@ -61,6 +62,7 @@ export default function SearchOperationsPage() {
 
   return (
     <div className="min-h-screen bg-surface-900 text-fg-1">
+      <OperatorLogin />
       {/* Header */}
       <header className="border-b border-surface-700 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">

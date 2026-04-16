@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { search } from "@/lib/api";
 import { generateGrid } from "@/lib/gridGenerator";
 import { useSearchStore } from "@/stores/search";
+import { useEscapeKey } from "@/hooks/useEscapeKey";
 import type { SearchOperation, GridGenerationParams } from "@/types/search";
 import { X, Grid3X3, Hexagon, RotateCw, Route, Target, Dog, Plane } from "lucide-react";
 
@@ -24,6 +25,7 @@ const GRID_TYPES = [
 
 export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
   const { toggleGridGenerator, setPreviewZones, gridDatumId, setGridDatumId } = useSearchStore();
+  useEscapeKey(toggleGridGenerator);
   const [gridType, setGridType] = useState<string>("parallel");
   const [cellSize, setCellSize] = useState(500);
   const [radius, setRadius] = useState(500);

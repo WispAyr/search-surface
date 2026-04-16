@@ -4,14 +4,38 @@
 // to their upstream services.
 
 const BASE = "/api";
+const ADMIN_TOKEN_KEY = "search_admin_token";
+
+// Admin bearer token (only used when SEARCH_ADMIN_TOKEN env is set on the
+// server). Stored client-side in localStorage so it survives reloads.
+export function getAdminToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try { return window.localStorage.getItem(ADMIN_TOKEN_KEY); } catch { return null; }
+}
+export function setAdminToken(token: string | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (token) window.localStorage.setItem(ADMIN_TOKEN_KEY, token);
+    else window.localStorage.removeItem(ADMIN_TOKEN_KEY);
+  } catch {}
+}
+
+// Subscribers get notified on 401 (auth required) so the shell can surface the
+// login modal without threading state through every call-site.
+type AuthFailureHandler = () => void;
+let authFailureHandler: AuthFailureHandler | null = null;
+export function onAuthFailure(handler: AuthFailureHandler) { authFailureHandler = handler; }
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (opts?.headers) Object.assign(headers, opts.headers as Record<string, string>);
+  const adminToken = getAdminToken();
+  if (adminToken) headers["X-Search-Admin"] = adminToken;
+
+  const res = await fetch(`${BASE}${path}`, { ...opts, headers });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
+    if (res.status === 401 && authFailureHandler) authFailureHandler();
     throw new Error(`API ${res.status}: ${text}`);
   }
   return res.json();
@@ -130,6 +154,26 @@ export const search = {
   exportGeoJSON: (opId: string) => `${BASE}/search/operations/${opId}/export/geojson`,
   exportGPX: (opId: string) => `${BASE}/search/operations/${opId}/export/gpx`,
   exportKML: (opId: string) => `${BASE}/search/operations/${opId}/export/kml`,
+
+  // Share / briefing links
+  createShare: (opId: string, ttlHours?: number) =>
+    request<{ token: string; operation_id: string; expires_at: string | null }>(
+      `/search/operations/${opId}/share`,
+      { method: "POST", body: JSON.stringify({ ttl_hours: ttlHours || null }) },
+    ),
+  listShares: (opId: string) =>
+    request<{ shares: Array<{ token: string; created_by?: string; created_at: string; expires_at: string | null; revoked: number }> }>(
+      `/search/operations/${opId}/shares`,
+    ),
+  revokeShare: (token: string) =>
+    request<{ ok: true }>(`/search/shares/${token}`, { method: "DELETE" }),
+  getBrief: (token: string) =>
+    request<{ operation: any; sitrep: any; reports: any[]; share: { token: string; expires_at: string | null }; generated_at: string }>(
+      `/search/brief/${token}`,
+    ),
+
+  // Operator auth status
+  authStatus: () => request<{ required: boolean; authed: boolean }>(`/search/auth/status`),
 
   // Field team API (uses token auth)
   fieldContext: (token: string) =>

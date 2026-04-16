@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { useSearchStore } from "@/stores/search";
+import { useEscapeKey } from "@/hooks/useEscapeKey";
 import type { SearchOperation } from "@/types/search";
 import {
   calculatePOD,
@@ -13,6 +14,7 @@ import { X, Calculator } from "lucide-react";
 
 export function PODCalculator({ operation }: { operation: SearchOperation }) {
   const { togglePODCalculator } = useSearchStore();
+  useEscapeKey(togglePODCalculator);
   const [terrain, setTerrain] = useState("open_ground");
   const [subjectType, setSubjectType] = useState("responsive");
   const [targetPOD, setTargetPOD] = useState(0.7);

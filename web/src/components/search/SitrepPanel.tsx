@@ -3,11 +3,13 @@
 import { useEffect, useState } from "react";
 import { search } from "@/lib/api";
 import { useSearchStore } from "@/stores/search";
+import { useEscapeKey } from "@/hooks/useEscapeKey";
 import type { Sitrep } from "@/types/search";
 import { X, FileText, RefreshCw, Copy, Check } from "lucide-react";
 
 export function SitrepPanel({ operationId }: { operationId: string }) {
   const { toggleSitrepPanel, sitrep, setSitrep } = useSearchStore();
+  useEscapeKey(toggleSitrepPanel);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { search } from "@/lib/api";
+import { useEscapeKey } from "@/hooks/useEscapeKey";
 import type { OperationType, SearchOperation, DatumKind } from "@/types/search";
 import { AlertTriangle, Shield, Users, Eye, MapPin, ChevronLeft, ChevronRight, Plus, Trash2, X, Check, Info } from "lucide-react";
 import { LocationLookup } from "./LocationLookup";
@@ -42,6 +43,7 @@ export function IncidentWizard({
   onClose: () => void;
   onCreated: (op: SearchOperation) => void;
 }) {
+  useEscapeKey(onClose);
   const [step, setStep] = useState(1);
   const [draft, setDraft] = useState<Draft>({
     name: "",

@@ -18,6 +18,7 @@ import { SitrepPanel } from "./SitrepPanel";
 import { SearchConditions } from "./SearchConditions";
 import { DatumsPanel } from "./DatumsPanel";
 import { SarToolsPanel } from "./SarToolsPanel";
+import { OperatorLogin } from "./OperatorLogin";
 import { PanelRightOpen, Map as MapIcon } from "lucide-react";
 
 const SearchMap = dynamic(() => import("./SearchMap").then((m) => m.SearchMap), {
@@ -72,6 +73,7 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
 
   return (
     <div className="h-screen flex flex-col bg-surface-900 text-fg-1 overflow-hidden">
+      <OperatorLogin />
       {/* Header bar — z-[1000] to sit above map */}
       <div className="relative z-[1000]">
       <OperationHeader

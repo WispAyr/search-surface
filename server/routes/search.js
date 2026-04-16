@@ -1,5 +1,5 @@
 const express = require('express');
-const { operations, zones, teams, reports, comms, datums, audit, generateSitrep } = require('../search-db');
+const { operations, zones, teams, reports, comms, datums, audit, shareTokens, generateSitrep } = require('../search-db');
 const searchHelpers = require('../search-helpers');
 const multer = require('multer');
 const path = require('path');
@@ -105,13 +105,44 @@ function fieldAuth(req, res, next) {
   next();
 }
 
+// Opt-in operator auth. If SEARCH_ADMIN_TOKEN env is unset, the original open
+// behaviour is preserved (any caller without a field-team token is treated as
+// admin). If set, requireSearchAdmin additionally checks for a matching bearer
+// via X-Search-Admin header or search_admin cookie — frontend stores the value
+// in localStorage and injects it.
+const ADMIN_TOKEN = process.env.SEARCH_ADMIN_TOKEN || null;
+
+function parseCookie(header, name) {
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === name) return decodeURIComponent(v.join('='));
+  }
+  return null;
+}
+
 // ── Require admin (no tenant = admin, or tenant with admin role) ──
 function requireSearchAdmin(req, res, next) {
   // If a field team token is present, deny admin access
   if (req.searchTeam) return res.status(403).json({ error: 'Admin access required' });
   // Tenant viewers can't modify
   if (req.tenant && req.tenant.role === 'viewer') return res.status(403).json({ error: 'Edit access required' });
+  // Optional bearer check (only enforced when SEARCH_ADMIN_TOKEN is set)
+  if (ADMIN_TOKEN) {
+    const provided = req.headers['x-search-admin'] || parseCookie(req.headers.cookie, 'search_admin');
+    if (provided !== ADMIN_TOKEN) {
+      return res.status(401).json({ error: 'Operator auth required', auth_required: true });
+    }
+  }
   next();
+}
+
+// Expose whether operator auth is enabled + whether the current caller passes.
+// Frontend uses this to decide whether to show the login modal.
+function adminAuthStatus(req) {
+  if (!ADMIN_TOKEN) return { required: false, authed: true };
+  const provided = req.headers['x-search-admin'] || parseCookie(req.headers.cookie, 'search_admin');
+  return { required: true, authed: provided === ADMIN_TOKEN };
 }
 
 // ════════════════════════════════════════════════
@@ -502,6 +533,55 @@ router.get('/operations/:id/sitrep', (req, res) => {
   const sitrep = generateSitrep(req.params.id);
   if (!sitrep) return res.status(404).json({ error: 'Operation not found' });
   res.json(sitrep);
+});
+
+// ════════════════════════════════════════════════
+// SHARE TOKENS + BRIEF (public read-only)
+// ════════════════════════════════════════════════
+
+// Create a share token for an operation. Admin only. TTL in hours, optional.
+router.post('/operations/:id/share', requireSearchAdmin, (req, res) => {
+  const op = operations.get(req.params.id);
+  if (!op) return res.status(404).json({ error: 'Operation not found' });
+  const ttlHours = Number(req.body?.ttl_hours) || null;
+  const result = shareTokens.create(req.params.id, { ttlHours });
+  audit.log(req.params.id, 'operator', 'share_token_created', { expires_at: result.expires_at });
+  res.status(201).json(result);
+});
+
+router.get('/operations/:id/shares', requireSearchAdmin, (req, res) => {
+  res.json({ shares: shareTokens.listByOperation(req.params.id) });
+});
+
+router.delete('/shares/:token', requireSearchAdmin, (req, res) => {
+  shareTokens.revoke(req.params.token);
+  res.json({ ok: true });
+});
+
+// Public read-only briefing by token. Returns op, zones, datums, teams (no
+// tokens leaked), reports + sitrep. Used by /brief/:token frontend page for
+// stakeholders and print view.
+router.get('/brief/:token', (req, res) => {
+  const entry = shareTokens.getByToken(req.params.token);
+  if (!entry) return res.status(404).json({ error: 'Invalid or expired share link' });
+  const op = operations.get(entry.operation_id);
+  if (!op) return res.status(404).json({ error: 'Operation not found' });
+  const sitrep = generateSitrep(entry.operation_id);
+  // Scrub team tokens before returning — share links must not leak field auth.
+  const safeTeams = (op.teams || []).map(({ token, ...t }) => t);
+  res.json({
+    operation: { ...op, teams: safeTeams },
+    sitrep,
+    reports: reports.listByOperation(entry.operation_id, 50).map(({ photo_url, ...r }) => r),
+    generated_at: new Date().toISOString(),
+    share: { token: req.params.token, expires_at: entry.expires_at },
+  });
+});
+
+// Reports whether the current caller needs to log in as operator. Frontend
+// uses this at boot; if required=true and authed=false, show login modal.
+router.get('/auth/status', (req, res) => {
+  res.json(adminAuthStatus(req));
 });
 
 // ════════════════════════════════════════════════

@@ -116,6 +116,18 @@ db.exec(`
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_sd_op ON search_datums(operation_id);
+
+  -- Read-only public share links. Tokens scope to one operation and optionally expire.
+  -- Used for shared briefing URLs (stakeholders, incoming units) and print view.
+  CREATE TABLE IF NOT EXISTS search_share_tokens (
+    token TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL REFERENCES search_operations(id) ON DELETE CASCADE,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    revoked INTEGER DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_sst_op ON search_share_tokens(operation_id);
 `);
 
 // Additive migrations for pre-checklist DBs — SQLite will error on dup-column
@@ -604,4 +616,32 @@ function generateSitrep(operationId) {
   };
 }
 
-module.exports = { operations, zones, teams, reports, comms, datums, audit, generateSitrep };
+// ════════════════════════════════════════════════
+// SHARE TOKENS (read-only briefing links)
+// ════════════════════════════════════════════════
+
+const shareTokens = {
+  create(operationId, { createdBy = null, ttlHours = null } = {}) {
+    const token = generateToken();
+    const expires = ttlHours ? new Date(Date.now() + ttlHours * 3600 * 1000).toISOString() : null;
+    db.prepare(`
+      INSERT INTO search_share_tokens (token, operation_id, created_by, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(token, operationId, createdBy, now(), expires);
+    return { token, operation_id: operationId, expires_at: expires };
+  },
+  getByToken(token) {
+    const row = db.prepare(`SELECT * FROM search_share_tokens WHERE token = ? AND revoked = 0`).get(token);
+    if (!row) return null;
+    if (row.expires_at && new Date(row.expires_at) < new Date()) return null;
+    return row;
+  },
+  listByOperation(operationId) {
+    return db.prepare(`SELECT token, created_by, created_at, expires_at, revoked FROM search_share_tokens WHERE operation_id = ? ORDER BY created_at DESC`).all(operationId);
+  },
+  revoke(token) {
+    db.prepare(`UPDATE search_share_tokens SET revoked = 1 WHERE token = ?`).run(token);
+  },
+};
+
+module.exports = { operations, zones, teams, reports, comms, datums, audit, shareTokens, generateSitrep };
