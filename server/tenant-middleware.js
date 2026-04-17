@@ -49,6 +49,7 @@ function resolveTenant(req) {
     email: user.email,
     role: user.role,
     display_name: user.display_name,
+    is_platform_admin: !!user.is_platform_admin,
     session_token: tok,
   };
 }
@@ -76,4 +77,11 @@ function requireRole(...allowed) {
   };
 }
 
-module.exports = { attachTenant, requireTenant, requireRole, COOKIE_NAME };
+function requirePlatformAdmin(req, res, next) {
+  if (!req.tenant) req.tenant = resolveTenant(req);
+  if (!req.tenant) return res.status(401).json({ error: 'Login required', auth_required: true });
+  if (!req.tenant.is_platform_admin) return res.status(403).json({ error: 'Platform admin only' });
+  next();
+}
+
+module.exports = { attachTenant, requireTenant, requireRole, requirePlatformAdmin, COOKIE_NAME };

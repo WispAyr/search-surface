@@ -8,6 +8,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         API_PORT: 4078,
+        PLATFORM_ADMIN_EMAILS: 'ewan@wispayr.online',
       },
       max_memory_restart: '512M',
     },

@@ -32,6 +32,7 @@ export interface AuthUser {
   email: string;
   display_name: string | null;
   role: "owner" | "operator" | "viewer";
+  is_platform_admin?: boolean;
   tenant: { id: string; slug: string; name: string; plan: string };
 }
 
@@ -52,6 +53,83 @@ export const auth = {
     request<{ user: unknown }>(`/auth/users/${userId}`, { method: "PATCH", body: JSON.stringify({ role }) }),
   removeUser: (userId: string) =>
     request<{ ok: boolean }>(`/auth/users/${userId}`, { method: "DELETE" }),
+};
+
+// ── Platform admin (cross-tenant) ──
+export interface AdminOverview {
+  totals: { tenants: number; users: number; sessions_active: number; operations: number };
+  signups: { d1: number; d7: number; d30: number };
+  tenants_new: { d1: number; d7: number; d30: number };
+  dau_24h: number;
+  sparkline: Array<{ day: string; users: number; tenants: number }>;
+}
+export interface AdminTenantRow {
+  id: string;
+  slug: string;
+  name: string;
+  plan: string;
+  created_at: string;
+  user_count: number;
+  op_count: number;
+  active_sessions: number;
+  last_activity_at: string | null;
+  last_login_at: string | null;
+}
+export interface AdminUserRow {
+  id: string;
+  email: string;
+  display_name: string | null;
+  role: string;
+  is_platform_admin: number;
+  created_at: string;
+  last_login_at: string | null;
+  tenant_id: string;
+  tenant_slug: string;
+  tenant_name: string;
+  tenant_plan: string;
+}
+export interface AdminSession {
+  token_preview: string;
+  user_id: string;
+  tenant_id: string;
+  created_at: string;
+  expires_at: string;
+  last_seen_at: string;
+  email: string;
+  display_name: string | null;
+  role: string;
+  tenant_slug: string;
+  tenant_name: string;
+}
+export interface AdminActivity {
+  kind: "signup" | "login";
+  at: string;
+  email: string;
+  role: string;
+  tenant_slug: string;
+  tenant_name: string;
+}
+export const admin = {
+  overview: () => request<AdminOverview>(`/admin/overview`),
+  tenants: () => request<{ tenants: AdminTenantRow[] }>(`/admin/tenants`),
+  tenant: (id: string) =>
+    request<{
+      tenant: { id: string; slug: string; name: string; plan: string; created_at: string };
+      users: Array<{ id: string; email: string; role: string; created_at: string; last_login_at: string | null; is_platform_admin: number; display_name: string | null }>;
+      operations: Array<{ id: string; name: string; type: string; status: string; created_at: string; updated_at: string; created_by: string | null; zone_count: number; team_count: number; report_count: number }>;
+      operations_count: number;
+      active_sessions: number;
+    }>(`/admin/tenants/${id}`),
+  patchTenant: (id: string, data: { name?: string; plan?: string }) =>
+    request<{ tenant: unknown }>(`/admin/tenants/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  deleteTenant: (id: string) =>
+    request<{ ok: boolean }>(`/admin/tenants/${id}`, { method: "DELETE" }),
+  users: (q?: string) =>
+    request<{ users: AdminUserRow[] }>(`/admin/users${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  patchUser: (id: string, data: { role?: string; is_platform_admin?: boolean }) =>
+    request<{ user: unknown }>(`/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  sessions: () => request<{ sessions: AdminSession[] }>(`/admin/sessions`),
+  activity: () => request<{ events: AdminActivity[] }>(`/admin/activity`),
 };
 
 // ── Siphon (data collection) — proxied through backend ──

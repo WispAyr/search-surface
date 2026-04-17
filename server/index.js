@@ -11,6 +11,7 @@ const axios = require('axios').default || require('axios');
 const searchRoutes = require('./routes/search');
 const searchHelperRoutes = require('./search-helpers');
 const authRoutes = require('./auth-routes');
+const adminRoutes = require('./admin-routes');
 const zelloRoutes = require('./routes/zello');
 
 const app = express();
@@ -31,6 +32,9 @@ app.use(express.json({ limit: '10mb' }));
 
 // ── Auth / multi-tenant ──
 app.use('/api/auth', authRoutes);
+
+// ── Platform admin (cross-tenant) ──
+app.use('/api/admin', adminRoutes);
 
 // ── Zello BYOK (per-tenant integration) ──
 app.use('/api/zello', zelloRoutes);

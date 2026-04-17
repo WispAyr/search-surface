@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
-import { LogOut, Settings, User, ChevronDown } from "lucide-react";
+import { LogOut, Settings, User, ChevronDown, Shield } from "lucide-react";
 
 export function UserMenu() {
   const { user, logout } = useAuth();
@@ -62,6 +62,16 @@ export function UserMenu() {
             >
               <User size={14} />
               Members
+            </Link>
+          )}
+          {user.is_platform_admin && (
+            <Link
+              href="/admin"
+              onClick={() => setOpen(false)}
+              className="flex items-center gap-2 px-3 py-2 hover:bg-surface-700 text-accent"
+            >
+              <Shield size={14} />
+              Platform admin
             </Link>
           )}
           <button

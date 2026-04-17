@@ -14,7 +14,7 @@
 // DISABLE_SIGNUP=1 in env to lock signups and force owners to invite.
 
 const express = require('express');
-const { tenants, users, sessions, settings, verifyPassword } = require('./auth-db');
+const { tenants, users, sessions, settings, verifyPassword, syncPlatformAdmins } = require('./auth-db');
 const { attachTenant, requireTenant, requireRole, COOKIE_NAME } = require('./tenant-middleware');
 
 const router = express.Router();
@@ -58,6 +58,7 @@ function sanitizeUser(user, tenant) {
     email: user.email,
     display_name: user.display_name,
     role: user.role,
+    is_platform_admin: !!user.is_platform_admin,
     tenant: { id: tenant.id, slug: tenant.slug, name: tenant.name, plan: tenant.plan },
   };
 }
@@ -86,12 +87,17 @@ router.post('/signup', (req, res) => {
     return res.status(400).json({ error: err.message });
   }
 
+  // Re-run platform-admin sync so allowlisted emails are promoted at signup
+  // time, not just on restart. No-op for non-matching emails.
+  try { syncPlatformAdmins(); } catch { /* best-effort */ }
+
   const session = sessions.create(user.id, tenant.id);
   users.recordLogin(user.id);
   setSessionCookie(res, session.token, session.expires_at);
+  const refreshed = users.get(user.id) || user;
   res.status(201).json({
     ok: true,
-    user: sanitizeUser(user, tenant),
+    user: sanitizeUser(refreshed, tenant),
     session: { expires_at: session.expires_at, days: SESSION_DAYS },
   });
 });
@@ -156,6 +162,7 @@ router.get('/me', (req, res) => {
       email: req.tenant.email,
       display_name: req.tenant.display_name,
       role: req.tenant.role,
+      is_platform_admin: !!req.tenant.is_platform_admin,
       tenant: {
         id: req.tenant.id,
         slug: req.tenant.slug,

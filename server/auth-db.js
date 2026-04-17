@@ -30,6 +30,7 @@ db.exec(`
     password_salt TEXT NOT NULL,
     display_name TEXT,
     role TEXT NOT NULL DEFAULT 'operator' CHECK(role IN ('owner','operator','viewer')),
+    is_platform_admin INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     last_login_at TEXT,
     UNIQUE(tenant_id, email)
@@ -64,6 +65,11 @@ db.exec(`
 // orphan operations with it. New installs get the column and nothing else.
 try {
   db.exec(`ALTER TABLE search_operations ADD COLUMN tenant_id TEXT`);
+} catch { /* already present */ }
+
+// Backfill is_platform_admin on existing tenant_users installs.
+try {
+  db.exec(`ALTER TABLE tenant_users ADD COLUMN is_platform_admin INTEGER NOT NULL DEFAULT 0`);
 } catch { /* already present */ }
 
 function nowIso() { return new Date().toISOString(); }
@@ -134,7 +140,7 @@ const users = {
   },
 
   get(id) {
-    const u = db.prepare('SELECT id, tenant_id, email, display_name, role, created_at, last_login_at FROM tenant_users WHERE id = ?').get(id);
+    const u = db.prepare('SELECT id, tenant_id, email, display_name, role, is_platform_admin, created_at, last_login_at FROM tenant_users WHERE id = ?').get(id);
     return u || null;
   },
 
@@ -148,7 +154,12 @@ const users = {
   },
 
   listByTenant(tenantId) {
-    return db.prepare('SELECT id, email, display_name, role, created_at, last_login_at FROM tenant_users WHERE tenant_id = ? ORDER BY created_at ASC').all(tenantId);
+    return db.prepare('SELECT id, email, display_name, role, is_platform_admin, created_at, last_login_at FROM tenant_users WHERE tenant_id = ? ORDER BY created_at ASC').all(tenantId);
+  },
+
+  setPlatformAdmin(userId, on) {
+    db.prepare('UPDATE tenant_users SET is_platform_admin = ? WHERE id = ?').run(on ? 1 : 0, userId);
+    return this.get(userId);
   },
 
   setRole(userId, role) {
@@ -340,4 +351,25 @@ const settings = {
   }
 })();
 
-module.exports = { tenants, users, sessions, settings, verifyPassword, hashPassword, SESSION_TTL_DAYS };
+// ── Platform-admin promotion from env ──
+// PLATFORM_ADMIN_EMAILS is a comma-separated allowlist. Any tenant_users row
+// whose email matches gets is_platform_admin=1 on boot; any row not in the list
+// is demoted to 0. Runs every boot so the env var is the source of truth.
+function syncPlatformAdmins() {
+  const raw = process.env.PLATFORM_ADMIN_EMAILS || '';
+  const allow = raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (allow.length === 0) {
+    db.prepare('UPDATE tenant_users SET is_platform_admin = 0 WHERE is_platform_admin = 1').run();
+    return { promoted: 0, demoted: 0 };
+  }
+  const placeholders = allow.map(() => '?').join(',');
+  const promoted = db.prepare(`UPDATE tenant_users SET is_platform_admin = 1 WHERE email IN (${placeholders}) AND is_platform_admin = 0`).run(...allow);
+  const demoted = db.prepare(`UPDATE tenant_users SET is_platform_admin = 0 WHERE email NOT IN (${placeholders}) AND is_platform_admin = 1`).run(...allow);
+  if (promoted.changes > 0 || demoted.changes > 0) {
+    console.log(`[auth] platform admins synced: +${promoted.changes} -${demoted.changes} (allowlist: ${allow.join(', ')})`);
+  }
+  return { promoted: promoted.changes, demoted: demoted.changes };
+}
+try { syncPlatformAdmins(); } catch (err) { console.warn(`[auth] platform-admin sync failed: ${err.message}`); }
+
+module.exports = { tenants, users, sessions, settings, verifyPassword, hashPassword, syncPlatformAdmins, SESSION_TTL_DAYS };
