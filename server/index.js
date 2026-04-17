@@ -10,6 +10,8 @@ const axios = require('axios').default || require('axios');
 
 const searchRoutes = require('./routes/search');
 const searchHelperRoutes = require('./search-helpers');
+const authRoutes = require('./auth-routes');
+const zelloRoutes = require('./routes/zello');
 
 const app = express();
 const PORT = process.env.API_PORT || 4078;
@@ -17,8 +19,21 @@ const SIPHON_URL = process.env.SIPHON_URL || 'http://127.0.0.1:3883';
 const PRISM_URL = process.env.PRISM_URL || 'http://127.0.0.1:3885';
 
 // ── Middleware ──
-app.use(cors());
+// In dev the web app runs on :4077 and the api on :4078 — allow credentials
+// from the Next dev origin so the session cookie round-trips. In prod nginx
+// fronts both on the same origin and this is moot.
+const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:4077';
+app.use(cors({
+  origin: (origin, cb) => cb(null, origin || CORS_ORIGIN),
+  credentials: true,
+}));
 app.use(express.json({ limit: '10mb' }));
+
+// ── Auth / multi-tenant ──
+app.use('/api/auth', authRoutes);
+
+// ── Zello BYOK (per-tenant integration) ──
+app.use('/api/zello', zelloRoutes);
 
 // ── TTL cache for upstream proxies (mirrors prism-surface) ──
 const proxyCache = new Map();

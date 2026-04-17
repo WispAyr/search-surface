@@ -162,8 +162,14 @@ function parseJSON(str) {
 }
 
 // ── Operations ──
+//
+// All reads/writes accept an optional `tenantId`. Routes that have an
+// authenticated tenant MUST pass it; callers without one (field team tokens
+// resolved independently, brief tokens) pass null and the DB layer will trust
+// the caller's scoping (field/brief endpoints already look up by operation_id
+// and enforce their own auth).
 const operations = {
-  list(status) {
+  list(status, tenantId) {
     const base = `
       SELECT o.*,
         (SELECT COUNT(*) FROM search_zones WHERE operation_id = o.id) as zone_count,
@@ -171,14 +177,19 @@ const operations = {
         (SELECT COUNT(*) FROM search_reports WHERE operation_id = o.id) as report_count
       FROM search_operations o
     `;
-    const rows = status
-      ? db.prepare(`${base} WHERE o.status = ? ORDER BY o.updated_at DESC`).all(status)
-      : db.prepare(`${base} ORDER BY o.updated_at DESC`).all();
+    const where = [];
+    const vals = [];
+    if (tenantId) { where.push('o.tenant_id = ?'); vals.push(tenantId); }
+    if (status) { where.push('o.status = ?'); vals.push(status); }
+    const sql = `${base}${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY o.updated_at DESC`;
+    const rows = db.prepare(sql).all(...vals);
     return rows.map(r => ({ ...r, subject_info: parseJSON(r.subject_info) }));
   },
 
-  get(id) {
-    const op = db.prepare('SELECT * FROM search_operations WHERE id = ?').get(id);
+  get(id, tenantId) {
+    const op = tenantId
+      ? db.prepare('SELECT * FROM search_operations WHERE id = ? AND tenant_id = ?').get(id, tenantId)
+      : db.prepare('SELECT * FROM search_operations WHERE id = ?').get(id);
     if (!op) return null;
     op.subject_info = parseJSON(op.subject_info);
     op.sitrep_recipients = parseJSON(op.sitrep_recipients) || [];
@@ -188,13 +199,20 @@ const operations = {
     return op;
   },
 
-  create({ name, type, datum_lat, datum_lon, bounds, subject_info, weather_notes, linked_event_id, created_by }) {
+  // Lightweight lookup used by middleware/field-auth to fetch just the
+  // tenant_id for a given operation id without hydrating zones/teams/datums.
+  getTenantId(id) {
+    const row = db.prepare('SELECT tenant_id FROM search_operations WHERE id = ?').get(id);
+    return row?.tenant_id || null;
+  },
+
+  create({ name, type, datum_lat, datum_lon, bounds, subject_info, weather_notes, linked_event_id, created_by, tenant_id }) {
     const id = uuid();
     const ts = now();
     db.prepare(`
-      INSERT INTO search_operations (id, name, type, datum_lat, datum_lon, bounds, subject_info, weather_notes, linked_event_id, created_by, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, name, type, datum_lat || null, datum_lon || null, bounds || null,
+      INSERT INTO search_operations (id, tenant_id, name, type, datum_lat, datum_lon, bounds, subject_info, weather_notes, linked_event_id, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, tenant_id || null, name, type, datum_lat || null, datum_lon || null, bounds || null,
       subject_info ? JSON.stringify(subject_info) : null, weather_notes || null,
       linked_event_id || null, created_by || 'operator', ts, ts);
     audit.log(id, created_by || 'operator', 'operation_created', { name, type });

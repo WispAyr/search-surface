@@ -1,6 +1,7 @@
 const express = require('express');
 const { operations, zones, teams, reports, comms, datums, audit, shareTokens, generateSitrep } = require('../search-db');
 const searchHelpers = require('../search-helpers');
+const { attachTenant, requireTenant } = require('../tenant-middleware');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -17,6 +18,33 @@ const MAIL_FROM_NAME = process.env.SITREP_MAIL_FROM_NAME || 'Search Ops';
 const PUBLIC_BASE = process.env.PUBLIC_BASE || 'https://search.wispayr.online';
 
 const router = express.Router();
+
+// Attach tenant context to every request on this router. Individual endpoints
+// decide whether to require a tenant (operator routes) or allow through
+// (field-team routes protected by a team token, brief routes protected by a
+// share token).
+router.use(attachTenant);
+
+// Assert the operation belongs to the current tenant. Call AFTER requireTenant.
+// Returns the op (hydrated) or sends 404/403 itself and returns null.
+function opForTenant(req, res, id) {
+  const op = operations.get(id, req.tenant.id);
+  if (!op) {
+    res.status(404).json({ error: 'Operation not found' });
+    return null;
+  }
+  return op;
+}
+
+// Zone/team/datum/report lookups by id don't naturally know the tenant; this
+// checks the parent operation and rejects cross-tenant access.
+function guardOperationId(req, res, operationId) {
+  if (!req.tenant) { res.status(401).json({ error: 'Login required', auth_required: true }); return false; }
+  const ownerTenantId = operations.getTenantId(operationId);
+  if (!ownerTenantId) { res.status(404).json({ error: 'Operation not found' }); return false; }
+  if (ownerTenantId !== req.tenant.id) { res.status(404).json({ error: 'Operation not found' }); return false; }
+  return true;
+}
 
 // Pull an outer ring out of a zone geometry (Polygon or MultiPolygon, and the
 // server stores GeoJSON [lon,lat] while OSM helpers expect [lat,lon]).
@@ -115,70 +143,40 @@ function fieldAuth(req, res, next) {
   next();
 }
 
-// Opt-in operator auth. If SEARCH_ADMIN_TOKEN env is unset, the original open
-// behaviour is preserved (any caller without a field-team token is treated as
-// admin). If set, requireSearchAdmin additionally checks for a matching bearer
-// via X-Search-Admin header or search_admin cookie — frontend stores the value
-// in localStorage and injects it.
-const ADMIN_TOKEN = process.env.SEARCH_ADMIN_TOKEN || null;
-
-function parseCookie(header, name) {
-  if (!header) return null;
-  for (const part of header.split(';')) {
-    const [k, ...v] = part.trim().split('=');
-    if (k === name) return decodeURIComponent(v.join('='));
-  }
-  return null;
-}
-
-// ── Require admin (no tenant = admin, or tenant with admin role) ──
+// Require an authenticated operator (owner or operator role). Viewers can read
+// but not mutate. Field-team endpoints are handled separately via fieldAuth.
 function requireSearchAdmin(req, res, next) {
-  // If a field team token is present, deny admin access
   if (req.searchTeam) return res.status(403).json({ error: 'Admin access required' });
-  // Tenant viewers can't modify
-  if (req.tenant && req.tenant.role === 'viewer') return res.status(403).json({ error: 'Edit access required' });
-  // Optional bearer check (only enforced when SEARCH_ADMIN_TOKEN is set)
-  if (ADMIN_TOKEN) {
-    const provided = req.headers['x-search-admin'] || parseCookie(req.headers.cookie, 'search_admin');
-    if (provided !== ADMIN_TOKEN) {
-      return res.status(401).json({ error: 'Operator auth required', auth_required: true });
-    }
-  }
+  if (!req.tenant) return res.status(401).json({ error: 'Login required', auth_required: true });
+  if (req.tenant.role === 'viewer') return res.status(403).json({ error: 'Edit access required' });
   next();
-}
-
-// Expose whether operator auth is enabled + whether the current caller passes.
-// Frontend uses this to decide whether to show the login modal.
-function adminAuthStatus(req) {
-  if (!ADMIN_TOKEN) return { required: false, authed: true };
-  const provided = req.headers['x-search-admin'] || parseCookie(req.headers.cookie, 'search_admin');
-  return { required: true, authed: provided === ADMIN_TOKEN };
 }
 
 // ════════════════════════════════════════════════
 // OPERATIONS
 // ════════════════════════════════════════════════
 
-router.get('/operations', (req, res) => {
-  const list = operations.list(req.query.status || null);
+router.get('/operations', requireTenant, (req, res) => {
+  const list = operations.list(req.query.status || null, req.tenant.id);
   res.json({ operations: list });
 });
 
 router.post('/operations', requireSearchAdmin, (req, res) => {
   const { name, type } = req.body;
   if (!name || !type) return res.status(400).json({ error: 'name and type are required' });
-  const op = operations.create(req.body);
+  const op = operations.create({ ...req.body, tenant_id: req.tenant.id, created_by: req.tenant.email });
   broadcast(op.id, { type: 'operation_updated', data: op });
   res.status(201).json(op);
 });
 
-router.get('/operations/:id', (req, res) => {
-  const op = operations.get(req.params.id);
-  if (!op) return res.status(404).json({ error: 'Operation not found' });
+router.get('/operations/:id', requireTenant, (req, res) => {
+  const op = opForTenant(req, res, req.params.id);
+  if (!op) return;
   res.json(op);
 });
 
 router.patch('/operations/:id', requireSearchAdmin, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const op = operations.update(req.params.id, req.body);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
   broadcast(op.id, { type: 'operation_updated', data: { id: op.id, status: op.status, name: op.name } });
@@ -186,6 +184,7 @@ router.patch('/operations/:id', requireSearchAdmin, (req, res) => {
 });
 
 router.delete('/operations/:id', requireSearchAdmin, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const removed = operations.remove(req.params.id);
   if (!removed) return res.status(404).json({ error: 'Operation not found' });
   broadcast(req.params.id, { type: 'operation_deleted', data: { id: req.params.id } });
@@ -193,6 +192,7 @@ router.delete('/operations/:id', requireSearchAdmin, (req, res) => {
 });
 
 router.post('/operations/:id/activate', requireSearchAdmin, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const op = operations.update(req.params.id, { status: 'active' });
   if (!op) return res.status(404).json({ error: 'Operation not found' });
   broadcast(op.id, { type: 'operation_updated', data: { id: op.id, status: 'active' } });
@@ -203,6 +203,7 @@ router.post('/operations/:id/activate', requireSearchAdmin, (req, res) => {
 // operation's subject_info so the brief/print view and operation header can
 // render it without an extra round-trip.
 router.post('/operations/:id/subject/photo', requireSearchAdmin, upload.single('photo'), (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const op = operations.get(req.params.id);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
   if (!req.file) return res.status(400).json({ error: 'No photo uploaded' });
@@ -215,8 +216,9 @@ router.post('/operations/:id/subject/photo', requireSearchAdmin, upload.single('
 });
 
 // ── SSE Stream ──
-router.get('/operations/:id/stream', (req, res) => {
+router.get('/operations/:id/stream', requireTenant, (req, res) => {
   const opId = req.params.id;
+  if (!guardOperationId(req, res, opId)) return;
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -251,6 +253,7 @@ router.get('/operations/:id/stream', (req, res) => {
 // ════════════════════════════════════════════════
 
 router.post('/operations/:id/zones', requireSearchAdmin, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const { name, geometry } = req.body;
   if (!name || !geometry) return res.status(400).json({ error: 'name and geometry required' });
   const zone = zones.create(req.params.id, req.body);
@@ -259,6 +262,7 @@ router.post('/operations/:id/zones', requireSearchAdmin, (req, res) => {
 });
 
 router.post('/operations/:id/zones/batch', requireSearchAdmin, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const { zones: zoneList } = req.body;
   if (!Array.isArray(zoneList) || zoneList.length === 0) {
     return res.status(400).json({ error: 'zones array required' });
@@ -270,6 +274,8 @@ router.post('/operations/:id/zones/batch', requireSearchAdmin, (req, res) => {
 
 router.patch('/zones/:zoneId', requireSearchAdmin, (req, res) => {
   const before = zones.get(req.params.zoneId);
+  if (!before) return res.status(404).json({ error: 'Zone not found' });
+  if (!guardOperationId(req, res, before.operation_id)) return;
   const zone = zones.update(req.params.zoneId, req.body);
   if (!zone) return res.status(404).json({ error: 'Zone not found' });
   broadcast(zone.operation_id, { type: 'zone_updated', data: zone });
@@ -295,6 +301,7 @@ router.patch('/zones/:zoneId', requireSearchAdmin, (req, res) => {
 router.delete('/zones/:zoneId', requireSearchAdmin, (req, res) => {
   const zone = zones.get(req.params.zoneId);
   if (!zone) return res.status(404).json({ error: 'Zone not found' });
+  if (!guardOperationId(req, res, zone.operation_id)) return;
   zones.delete(req.params.zoneId);
   broadcast(zone.operation_id, { type: 'operation_updated', data: { id: zone.operation_id } });
   res.json({ ok: true });
@@ -305,6 +312,7 @@ router.delete('/zones/:zoneId', requireSearchAdmin, (req, res) => {
 // ════════════════════════════════════════════════
 
 router.post('/operations/:id/datums', requireSearchAdmin, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const { label, kind, lat, lon, notes } = req.body || {};
   if (typeof lat !== 'number' || typeof lon !== 'number') {
     return res.status(400).json({ error: 'lat and lon (numbers) required' });
@@ -315,6 +323,9 @@ router.post('/operations/:id/datums', requireSearchAdmin, (req, res) => {
 });
 
 router.patch('/datums/:datumId', requireSearchAdmin, (req, res) => {
+  const existing = datums.get(req.params.datumId);
+  if (!existing) return res.status(404).json({ error: 'Datum not found' });
+  if (!guardOperationId(req, res, existing.operation_id)) return;
   const updated = datums.update(req.params.datumId, req.body || {});
   if (!updated) return res.status(404).json({ error: 'Datum not found' });
   broadcast(updated.operation_id, { type: 'operation_updated', data: { id: updated.operation_id } });
@@ -324,6 +335,7 @@ router.patch('/datums/:datumId', requireSearchAdmin, (req, res) => {
 router.delete('/datums/:datumId', requireSearchAdmin, (req, res) => {
   const d = datums.get(req.params.datumId);
   if (!d) return res.status(404).json({ error: 'Datum not found' });
+  if (!guardOperationId(req, res, d.operation_id)) return;
   datums.delete(req.params.datumId);
   broadcast(d.operation_id, { type: 'operation_updated', data: { id: d.operation_id } });
   res.json({ ok: true });
@@ -334,6 +346,7 @@ router.delete('/datums/:datumId', requireSearchAdmin, (req, res) => {
 // ════════════════════════════════════════════════
 
 router.post('/operations/:id/teams', requireSearchAdmin, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
   const team = teams.create(req.params.id, req.body);
@@ -341,6 +354,9 @@ router.post('/operations/:id/teams', requireSearchAdmin, (req, res) => {
 });
 
 router.patch('/teams/:teamId', requireSearchAdmin, (req, res) => {
+  const existing = teams.get(req.params.teamId);
+  if (!existing) return res.status(404).json({ error: 'Team not found' });
+  if (!guardOperationId(req, res, existing.operation_id)) return;
   const team = teams.update(req.params.teamId, req.body);
   if (!team) return res.status(404).json({ error: 'Team not found' });
   broadcast(team.operation_id, { type: 'operation_updated', data: { id: team.operation_id } });
@@ -407,13 +423,15 @@ router.post('/teams/:teamId/position', (req, res) => {
 // REPORTS
 // ════════════════════════════════════════════════
 
-router.get('/operations/:id/reports', (req, res) => {
+router.get('/operations/:id/reports', requireTenant, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const limit = parseInt(req.query.limit) || 100;
   const list = reports.listByOperation(req.params.id, limit);
   res.json({ reports: list });
 });
 
 router.post('/operations/:id/reports/:reportId/acknowledge', requireSearchAdmin, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const r = reports.acknowledge(req.params.reportId, req.body.by);
   if (!r) return res.status(404).json({ error: 'Report not found' });
   res.json(r);
@@ -526,13 +544,15 @@ router.use('/uploads', express.static(uploadsDir));
 // COMMS LOG
 // ════════════════════════════════════════════════
 
-router.get('/operations/:id/comms', (req, res) => {
+router.get('/operations/:id/comms', requireTenant, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const limit = parseInt(req.query.limit) || 200;
   const list = comms.list(req.params.id, limit);
   res.json({ comms: list });
 });
 
 router.post('/operations/:id/comms', requireSearchAdmin, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const { from_callsign, to_callsign, message, type } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
   const entry = comms.add(req.params.id, { from_callsign, to_callsign, message, type });
@@ -544,7 +564,8 @@ router.post('/operations/:id/comms', requireSearchAdmin, (req, res) => {
 // AUDIT LOG
 // ════════════════════════════════════════════════
 
-router.get('/operations/:id/audit', (req, res) => {
+router.get('/operations/:id/audit', requireTenant, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const limit = parseInt(req.query.limit) || 200;
   const list = audit.list(req.params.id, limit);
   res.json({ audit: list });
@@ -554,7 +575,8 @@ router.get('/operations/:id/audit', (req, res) => {
 // SITREP
 // ════════════════════════════════════════════════
 
-router.get('/operations/:id/sitrep', (req, res) => {
+router.get('/operations/:id/sitrep', requireTenant, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const sitrep = generateSitrep(req.params.id);
   if (!sitrep) return res.status(404).json({ error: 'Operation not found' });
   res.json(sitrep);
@@ -566,6 +588,7 @@ router.get('/operations/:id/sitrep', (req, res) => {
 
 // Create a share token for an operation. Admin only. TTL in hours, optional.
 router.post('/operations/:id/share', requireSearchAdmin, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const op = operations.get(req.params.id);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
   const ttlHours = Number(req.body?.ttl_hours) || null;
@@ -575,10 +598,16 @@ router.post('/operations/:id/share', requireSearchAdmin, (req, res) => {
 });
 
 router.get('/operations/:id/shares', requireSearchAdmin, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   res.json({ shares: shareTokens.listByOperation(req.params.id) });
 });
 
 router.delete('/shares/:token', requireSearchAdmin, (req, res) => {
+  const entry = shareTokens.getByToken(req.params.token);
+  // If already revoked/missing the tenant guard can't resolve it — just 404
+  // rather than leaking existence.
+  if (!entry) return res.status(404).json({ error: 'Share not found' });
+  if (!guardOperationId(req, res, entry.operation_id)) return;
   shareTokens.revoke(req.params.token);
   res.json({ ok: true });
 });
@@ -603,16 +632,28 @@ router.get('/brief/:token', (req, res) => {
   });
 });
 
-// Reports whether the current caller needs to log in as operator. Frontend
-// uses this at boot; if required=true and authed=false, show login modal.
+// Reports whether the caller is authed. Frontend uses this to decide whether
+// to render the app or redirect to /login. `required: true` is hardcoded now
+// that tenancy is mandatory; kept as a field so the frontend contract is stable.
 router.get('/auth/status', (req, res) => {
-  res.json(adminAuthStatus(req));
+  res.json({
+    required: true,
+    authed: !!req.tenant,
+    user: req.tenant ? {
+      id: req.tenant.user_id,
+      email: req.tenant.email,
+      display_name: req.tenant.display_name,
+      role: req.tenant.role,
+      tenant: { id: req.tenant.id, slug: req.tenant.slug, name: req.tenant.name, plan: req.tenant.plan },
+    } : null,
+  });
 });
 
 // Email the current SITREP to a list of stakeholders. Routed through the
 // shared mail relay (see user memory reference_mail_relay). Creates a fresh
 // 72h share token so recipients get a live-briefing link, not a snapshot.
 router.post('/operations/:id/sitrep/email', requireSearchAdmin, async (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const op = operations.get(req.params.id);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
 
@@ -700,7 +741,8 @@ function escapeHtml(s) {
 // EXPORT
 // ════════════════════════════════════════════════
 
-router.get('/operations/:id/export/geojson', (req, res) => {
+router.get('/operations/:id/export/geojson', requireTenant, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const op = operations.get(req.params.id);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
 
@@ -750,7 +792,8 @@ router.get('/operations/:id/export/geojson', (req, res) => {
   res.json(fc);
 });
 
-router.get('/operations/:id/export/gpx', (req, res) => {
+router.get('/operations/:id/export/gpx', requireTenant, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const op = operations.get(req.params.id);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
 
@@ -786,7 +829,8 @@ router.get('/operations/:id/export/gpx', (req, res) => {
   res.send(gpx);
 });
 
-router.get('/operations/:id/export/kml', (req, res) => {
+router.get('/operations/:id/export/kml', requireTenant, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
   const op = operations.get(req.params.id);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
 
@@ -840,9 +884,10 @@ router.get('/operations/:id/export/kml', (req, res) => {
 // ════════════════════════════════════════════════
 
 // Download flight plan for a specific drone zone as GPX with waypoint sequence
-router.get('/zones/:zoneId/flight-plan/gpx', (req, res) => {
+router.get('/zones/:zoneId/flight-plan/gpx', requireTenant, (req, res) => {
   const zone = zones.get(req.params.zoneId);
   if (!zone) return res.status(404).json({ error: 'Zone not found' });
+  if (!guardOperationId(req, res, zone.operation_id)) return;
 
   const plan = zone.geometry?.properties?.drone_flight_plan;
   if (!plan) return res.status(400).json({ error: 'Zone has no drone flight plan' });
@@ -876,9 +921,10 @@ router.get('/zones/:zoneId/flight-plan/gpx', (req, res) => {
 });
 
 // Download as KML (for Google Earth / DJI Ground Station)
-router.get('/zones/:zoneId/flight-plan/kml', (req, res) => {
+router.get('/zones/:zoneId/flight-plan/kml', requireTenant, (req, res) => {
   const zone = zones.get(req.params.zoneId);
   if (!zone) return res.status(404).json({ error: 'Zone not found' });
+  if (!guardOperationId(req, res, zone.operation_id)) return;
 
   const plan = zone.geometry?.properties?.drone_flight_plan;
   if (!plan) return res.status(400).json({ error: 'Zone has no drone flight plan' });
@@ -912,9 +958,10 @@ router.get('/zones/:zoneId/flight-plan/kml', (req, res) => {
 });
 
 // Flight plan metadata (JSON — for UI display)
-router.get('/zones/:zoneId/flight-plan', (req, res) => {
+router.get('/zones/:zoneId/flight-plan', requireTenant, (req, res) => {
   const zone = zones.get(req.params.zoneId);
   if (!zone) return res.status(404).json({ error: 'Zone not found' });
+  if (!guardOperationId(req, res, zone.operation_id)) return;
 
   const plan = zone.geometry?.properties?.drone_flight_plan;
   if (!plan) return res.status(400).json({ error: 'Zone has no drone flight plan' });
