@@ -72,7 +72,7 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
   const op = activeOperation;
 
   return (
-    <div className="h-screen flex flex-col bg-surface-900 text-fg-1 overflow-hidden">
+    <div className="app-fullscreen h-screen flex flex-col bg-surface-900 text-fg-1 overflow-hidden">
       {/* Header bar — z-[1000] to sit above map */}
       <div className="relative z-[1000]">
       <OperationHeader

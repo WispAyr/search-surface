@@ -121,13 +121,18 @@
 html, body {
   margin: 0;
   padding: 0;
-  height: 100%;
   background: var(--s-900);
   color: var(--t-fg);
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+html { min-height: 100%; }
+/* Routes that take over the viewport (e.g. map shell) set `.app-fullscreen`
+   on their root; we lock body scroll only when one is mounted. */
+body:has(.app-fullscreen) {
+  height: 100vh;
+  overflow: hidden;
 }
 
 /* Theme transition — smooth color shifts */
