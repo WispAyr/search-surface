@@ -18,7 +18,7 @@ import { SitrepPanel } from "./SitrepPanel";
 import { SearchConditions } from "./SearchConditions";
 import { DatumsPanel } from "./DatumsPanel";
 import { SarToolsPanel } from "./SarToolsPanel";
-import { OperatorLogin } from "./OperatorLogin";
+import { ZelloPanel } from "../ZelloPanel";
 import { PanelRightOpen, Map as MapIcon } from "lucide-react";
 
 const SearchMap = dynamic(() => import("./SearchMap").then((m) => m.SearchMap), {
@@ -73,7 +73,6 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
 
   return (
     <div className="h-screen flex flex-col bg-surface-900 text-fg-1 overflow-hidden">
-      <OperatorLogin />
       {/* Header bar — z-[1000] to sit above map */}
       <div className="relative z-[1000]">
       <OperationHeader
@@ -127,7 +126,7 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
             >
               <MapIcon size={14} />
             </button>
-            {(["zones", "datums", "sar", "reports", "comms", "teams", "conditions", "audit"] as const).map((tab) => (
+            {(["zones", "datums", "sar", "reports", "comms", "zello", "teams", "conditions", "audit"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setRightPanel(tab)}
@@ -149,6 +148,7 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
             {rightPanel === "sar" && <SarToolsPanel operation={op} />}
             {rightPanel === "reports" && <ReportsPanel operationId={op.id} />}
             {rightPanel === "comms" && <CommsLog operationId={op.id} />}
+            {rightPanel === "zello" && <ZelloPanel operationId={op.id} persistToLog />}
             {rightPanel === "teams" && <TeamTracker operation={op} onRefresh={refresh} />}
             {rightPanel === "conditions" && <SearchConditions operation={op} />}
             {rightPanel === "audit" && <AuditPanel operationId={op.id} />}

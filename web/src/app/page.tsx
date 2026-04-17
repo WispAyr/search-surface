@@ -8,7 +8,9 @@ import { useSearchOperations } from "@/hooks/useSearchData";
 import type { OperationType, SearchOperation } from "@/types/search";
 import { IncidentWizard } from "@/components/search/IncidentWizard";
 import { HelpPanel } from "@/components/search/HelpPanel";
-import { OperatorLogin } from "@/components/search/OperatorLogin";
+import { MarketingLanding } from "@/components/MarketingLanding";
+import { UserMenu } from "@/components/UserMenu";
+import { useAuth } from "@/hooks/useAuth";
 import {
   Search,
   Plus,
@@ -41,11 +43,22 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function SearchOperationsPage() {
   const router = useRouter();
+  const { status } = useAuth();
   const { operations, operationsLoading } = useSearchStore();
   const { refresh } = useSearchOperations();
   const [showCreate, setShowCreate] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // Unauthed → marketing landing. Loading → invisible (very short flash otherwise).
+  if (status === "loading") {
+    return (
+      <div className="min-h-screen bg-surface-900 flex items-center justify-center text-fg-4 text-sm">
+        Loading…
+      </div>
+    );
+  }
+  if (status === "anonymous") return <MarketingLanding />;
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`Delete "${name}"?\n\nThis permanently removes the operation and all its zones, teams, reports, and comms. This cannot be undone.`)) return;
@@ -62,7 +75,6 @@ export default function SearchOperationsPage() {
 
   return (
     <div className="min-h-screen bg-surface-900 text-fg-1">
-      <OperatorLogin />
       {/* Header */}
       <header className="border-b border-surface-700 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -85,6 +97,7 @@ export default function SearchOperationsPage() {
             <Plus size={14} />
             New Incident
           </button>
+          <UserMenu />
         </div>
       </header>
 

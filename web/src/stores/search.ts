@@ -44,7 +44,7 @@ interface SearchState {
   showSitrepPanel: boolean;
   settingDatum: boolean;
   showAirspace: boolean;
-  rightPanel: "zones" | "datums" | "reports" | "comms" | "teams" | "conditions" | "audit" | "sar";
+  rightPanel: "zones" | "datums" | "reports" | "comms" | "teams" | "conditions" | "audit" | "sar" | "zello";
   // ── SAR Tools (subject profile + rings + isochrones + hazards) ──
   showSarTools: boolean;
   subjectProfileId: string | null; // e.g. 'dementia', 'child_7_9', 'dog'

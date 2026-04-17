@@ -32,7 +32,9 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const adminToken = getAdminToken();
   if (adminToken) headers["X-Search-Admin"] = adminToken;
 
-  const res = await fetch(`${BASE}${path}`, { ...opts, headers });
+  // Include credentials so the session cookie travels — required for both same
+  // and cross-origin (dev: web on :4077, api on :4078; prod: both on same host).
+  const res = await fetch(`${BASE}${path}`, { credentials: "include", ...opts, headers });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     if (res.status === 401 && authFailureHandler) authFailureHandler();
@@ -40,6 +42,34 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   }
   return res.json();
 }
+
+// ── Auth / multi-tenant ──
+export interface AuthUser {
+  id: string;
+  email: string;
+  display_name: string | null;
+  role: "owner" | "operator" | "viewer";
+  tenant: { id: string; slug: string; name: string; plan: string };
+}
+
+export const auth = {
+  me: () => request<{ user: AuthUser | null }>(`/auth/me`),
+  signup: (data: { email: string; password: string; tenant_name: string; display_name?: string }) =>
+    request<{ ok: boolean; user: AuthUser }>(`/auth/signup`, { method: "POST", body: JSON.stringify(data) }),
+  login: (data: { email: string; password: string; tenant_slug?: string }) =>
+    request<{ ok: boolean; user: AuthUser }>(`/auth/login`, { method: "POST", body: JSON.stringify(data) }),
+  logout: () => request<{ ok: boolean }>(`/auth/logout`, { method: "POST" }),
+  changePassword: (data: { current_password: string; new_password: string }) =>
+    request<{ ok: boolean }>(`/auth/password`, { method: "POST", body: JSON.stringify(data) }),
+  listTeamUsers: () =>
+    request<{ users: Array<{ id: string; email: string; display_name: string | null; role: string; created_at: string; last_login_at: string | null }> }>(`/auth/users`),
+  inviteUser: (data: { email: string; password: string; display_name?: string; role?: string }) =>
+    request<{ user: { id: string; email: string; role: string } }>(`/auth/users`, { method: "POST", body: JSON.stringify(data) }),
+  setUserRole: (userId: string, role: string) =>
+    request<{ user: unknown }>(`/auth/users/${userId}`, { method: "PATCH", body: JSON.stringify({ role }) }),
+  removeUser: (userId: string) =>
+    request<{ ok: boolean }>(`/auth/users/${userId}`, { method: "DELETE" }),
+};
 
 // ── Siphon (data collection) — proxied through backend ──
 export const siphon = {
