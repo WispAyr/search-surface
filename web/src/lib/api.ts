@@ -4,21 +4,6 @@
 // to their upstream services.
 
 const BASE = "/api";
-const ADMIN_TOKEN_KEY = "search_admin_token";
-
-// Admin bearer token (only used when SEARCH_ADMIN_TOKEN env is set on the
-// server). Stored client-side in localStorage so it survives reloads.
-export function getAdminToken(): string | null {
-  if (typeof window === "undefined") return null;
-  try { return window.localStorage.getItem(ADMIN_TOKEN_KEY); } catch { return null; }
-}
-export function setAdminToken(token: string | null) {
-  if (typeof window === "undefined") return;
-  try {
-    if (token) window.localStorage.setItem(ADMIN_TOKEN_KEY, token);
-    else window.localStorage.removeItem(ADMIN_TOKEN_KEY);
-  } catch {}
-}
 
 // Subscribers get notified on 401 (auth required) so the shell can surface the
 // login modal without threading state through every call-site.
@@ -29,8 +14,6 @@ export function onAuthFailure(handler: AuthFailureHandler) { authFailureHandler 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (opts?.headers) Object.assign(headers, opts.headers as Record<string, string>);
-  const adminToken = getAdminToken();
-  if (adminToken) headers["X-Search-Admin"] = adminToken;
 
   // Include credentials so the session cookie travels — required for both same
   // and cross-origin (dev: web on :4077, api on :4078; prod: both on same host).

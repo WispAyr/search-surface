@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { search, getAdminToken } from "@/lib/api";
+import { search } from "@/lib/api";
 import { useEscapeKey } from "@/hooks/useEscapeKey";
 import type { OperationType, SearchOperation, DatumKind } from "@/types/search";
 import { AlertTriangle, Shield, Users, Eye, MapPin, ChevronLeft, ChevronRight, Plus, Trash2, X, Check, Info, Camera } from "lucide-react";
@@ -133,11 +133,10 @@ export function IncidentWizard({
         try {
           const form = new FormData();
           form.append("photo", draft.subjectPhoto);
-          const adminToken = getAdminToken();
           const resp = await fetch(`/api/search/operations/${op.id}/subject/photo`, {
             method: "POST",
             body: form,
-            headers: adminToken ? { "X-Search-Admin": adminToken } : undefined,
+            credentials: "include",
           });
           if (resp.ok) {
             const { photo_url } = await resp.json();

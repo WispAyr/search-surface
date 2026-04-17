@@ -10,6 +10,8 @@
 
 const { db } = require('./db');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS tenants (
@@ -219,7 +221,26 @@ setInterval(() => {
 }, 3600 * 1000).unref();
 
 // ── Settings (with optional encryption) ──
-const AUTH_SECRET = process.env.AUTH_SECRET || null;
+// AUTH_SECRET protects at-rest secrets (Zello keys, etc). If the operator
+// doesn't set one we generate a 48-byte random value and persist it to a
+// sidecar file so it survives restarts. Losing the file invalidates any
+// previously-encrypted settings but is otherwise harmless.
+const AUTH_SECRET_FILE = path.join(__dirname, 'data', '.auth-secret');
+let AUTH_SECRET = process.env.AUTH_SECRET || null;
+if (!AUTH_SECRET) {
+  try {
+    AUTH_SECRET = fs.readFileSync(AUTH_SECRET_FILE, 'utf8').trim();
+  } catch {
+    AUTH_SECRET = crypto.randomBytes(48).toString('base64');
+    try {
+      fs.mkdirSync(path.dirname(AUTH_SECRET_FILE), { recursive: true });
+      fs.writeFileSync(AUTH_SECRET_FILE, AUTH_SECRET, { mode: 0o600 });
+      console.log(`[auth] generated AUTH_SECRET → ${AUTH_SECRET_FILE}`);
+    } catch (err) {
+      console.warn(`[auth] could not persist AUTH_SECRET (${err.message}); using in-memory key for this process only`);
+    }
+  }
+}
 
 function encrypt(plaintext) {
   if (!AUTH_SECRET) throw new Error('AUTH_SECRET env required to store secrets');
@@ -277,5 +298,46 @@ const settings = {
     db.prepare('DELETE FROM tenant_settings WHERE tenant_id = ? AND key = ?').run(tenantId, key);
   },
 };
+
+// ── First-run bootstrap ──
+// If the auth tables are empty, provision a default tenant + owner so the
+// operator can sign straight in rather than hitting /signup. Credentials come
+// from env (BOOTSTRAP_OWNER_EMAIL + BOOTSTRAP_OWNER_PASSWORD) when provided;
+// otherwise a random password is generated and printed once to stdout — plus
+// written to data/.bootstrap-owner.txt (mode 0600) so it's recoverable.
+(function bootstrapFirstOwner() {
+  try {
+    const existing = db.prepare('SELECT COUNT(*) as n FROM tenant_users').get();
+    if (existing && existing.n > 0) return;
+
+    const email = (process.env.BOOTSTRAP_OWNER_EMAIL || 'owner@search.local').trim().toLowerCase();
+    const providedPw = process.env.BOOTSTRAP_OWNER_PASSWORD || '';
+    const password = providedPw || crypto.randomBytes(12).toString('base64').replace(/[+/=]/g, '').slice(0, 16);
+    const tenantName = process.env.BOOTSTRAP_TENANT_NAME || 'Search Ops';
+    const tenantSlug = (process.env.BOOTSTRAP_TENANT_SLUG || 'default').trim().toLowerCase();
+
+    const tenant = tenants.getBySlug(tenantSlug) || tenants.create({ slug: tenantSlug, name: tenantName });
+    users.create({ tenantId: tenant.id, email, password, displayName: 'Owner', role: 'owner' });
+
+    // Orphan operations get attached to the new tenant too.
+    db.prepare('UPDATE search_operations SET tenant_id = ? WHERE tenant_id IS NULL').run(tenant.id);
+
+    const banner = '═'.repeat(64);
+    console.log(`\n${banner}\n[auth] bootstrap owner created — sign in at /login:\n  email:    ${email}\n  password: ${password}\n  tenant:   ${tenantName} (${tenantSlug})\n${providedPw ? '  (from BOOTSTRAP_OWNER_PASSWORD env)' : '  (auto-generated — change it after first login)'}\n${banner}\n`);
+
+    if (!providedPw) {
+      try {
+        const credFile = path.join(__dirname, 'data', '.bootstrap-owner.txt');
+        fs.mkdirSync(path.dirname(credFile), { recursive: true });
+        fs.writeFileSync(credFile, `email: ${email}\npassword: ${password}\ntenant: ${tenantName} (${tenantSlug})\ngenerated_at: ${nowIso()}\n`, { mode: 0o600 });
+        console.log(`[auth] credentials also written to ${credFile}`);
+      } catch (err) {
+        console.warn(`[auth] could not persist bootstrap credentials: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[auth] bootstrap skipped: ${err.message}`);
+  }
+})();
 
 module.exports = { tenants, users, sessions, settings, verifyPassword, hashPassword, SESSION_TTL_DAYS };
