@@ -4,7 +4,7 @@
 
 const express = require('express');
 const axios = require('axios');
-const { tileBbox, bboxKey, persistedOverpass } = require('./overpass-cache');
+const { tileBbox, bboxKey, persistedOverpass, getStats: getOverpassStats } = require('./overpass-cache');
 const router = express.Router();
 
 const NOMINATIM = process.env.NOMINATIM_URL || 'https://nominatim.openstreetmap.org';
@@ -18,6 +18,9 @@ const OVERPASS_ENDPOINTS = (process.env.OVERPASS_URLS
     ]
 ).map(s => s.trim()).filter(Boolean);
 const OVERPASS = OVERPASS_ENDPOINTS[0];
+// In-memory tally of which mirror most recently served us — resets on
+// process restart. Exposed via /api/search/osm/stats.
+const mirrorWins = {};
 
 async function overpass(query, timeoutMs = 25000) {
   // Race all mirrors in parallel — whichever returns first wins. A sequential
@@ -39,9 +42,15 @@ async function overpass(query, timeoutMs = 25000) {
   const raceOnce = () => {
     const attempts = OVERPASS_ENDPOINTS.map((url) =>
       axios.post(url, body, { headers: hdrs, timeout: timeoutMs, validateStatus: s => s >= 200 && s < 300 })
-        .then((r) => r.data)
+        .then((r) => ({ data: r.data, url }))
     );
-    return Promise.any(attempts);
+    // Wrap Promise.any so the caller sees the same shape as before (just
+    // .data) while we capture which mirror actually won for stats purposes.
+    return Promise.any(attempts).then((win) => {
+      const host = (() => { try { return new URL(win.url).host; } catch { return '?'; } })();
+      mirrorWins[host] = (mirrorWins[host] || 0) + 1;
+      return win.data;
+    });
   };
   const hostOf = (u) => { try { return new URL(u || '').host; } catch { return '?'; } };
   const summarise = (aggErr) => (aggErr?.errors || []).map((x) => {
@@ -243,6 +252,7 @@ router.post('/osm/features', async (req, res) => {
     try {
       const r = await persistedOverpass(overpass, {
         key: bboxKey(ns, tiled),
+        ns,
         ttlMs: 30 * 60_000,
         query: q,
         timeoutMs: 21_000,
@@ -321,6 +331,7 @@ router.post('/osm/terrain', async (req, res) => {
     try {
       const r = await persistedOverpass(overpass, {
         key: bboxKey(ns, tiled),
+        ns,
         ttlMs: 30 * 60_000,
         query: q,
         timeoutMs: 26_000,
@@ -481,6 +492,7 @@ router.post('/osm/rivers', async (req, res) => {
     try {
       const r = await persistedOverpass(overpass, {
         key: bboxKey(ns, tiled),
+        ns,
         ttlMs: 30 * 60_000,
         query: q,
         timeoutMs: 26_000,
@@ -904,6 +916,18 @@ router.get('/gauges', async (req, res) => {
     generated_at: new Date().toISOString(),
     partial,
     errors,
+  });
+});
+
+// ── Overpass cache + mirror telemetry ──
+// Unauthenticated: internal ops visibility only (the stats contain no tenant
+// or operation data, just counters and mirror wins). If that ever changes
+// this should move behind requireTenant.
+router.get('/osm/stats', (_req, res) => {
+  res.json({
+    ...getOverpassStats(),
+    mirror_wins: { ...mirrorWins },
+    mirrors_configured: OVERPASS_ENDPOINTS.length,
   });
 });
 
