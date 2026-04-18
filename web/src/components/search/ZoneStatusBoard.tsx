@@ -10,7 +10,8 @@ import { processTerrain } from "@/lib/terrainClassifier";
 import { nextSearchableWindow, formatWindowStatus, TIDE_STATE_FILL } from "@/lib/tideWindows";
 import { GAUGE_TREND_FILL } from "@/lib/riverGauges";
 import { splitOnShoreline, isSplittable } from "@/lib/shorelineSplit";
-import { ChevronDown, ChevronUp, MapPin, Users, Check, Pause, Trash2, Download, Plane, Clock, ArrowUpDown, Filter, AlertTriangle, Scissors, Loader2, Activity } from "lucide-react";
+import { estimateZonePOD } from "@/lib/zonePodEstimator";
+import { ChevronDown, ChevronUp, MapPin, Users, Check, Pause, Trash2, Download, Plane, Clock, ArrowUpDown, Filter, AlertTriangle, Scissors, Loader2, Activity, Target } from "lucide-react";
 
 const STATUS_BADGE: Record<string, { bg: string; label: string }> = {
   unassigned: { bg: "bg-surface-600 text-fg-4", label: "Unassigned" },
@@ -358,6 +359,47 @@ function ZoneDetail({
           </div>
         </label>
       </div>
+
+      {/* Smart-grid Tier A4 — Expected POD estimate from terrain + team +
+          sweep-width table. Shown only when we have both a team and a
+          preset that makes sense for the terrain. "Expected" = textbook
+          floor for comparison against the IC-set value above. */}
+      {(() => {
+        const assigned = zone.assigned_team_id ? teams.find((t) => t.id === zone.assigned_team_id) : null;
+        const est = estimateZonePOD(zone, assigned);
+        if (!est) return null;
+        const expectedPct = Math.round(est.pod_one_pass * 100);
+        const recordedPct = Math.round(zone.pod * 100);
+        const gap = recordedPct - expectedPct;
+        const hint = gap >= 20
+          ? `recorded ${recordedPct}% is ${gap} pp above the textbook floor — confirm sweep quality`
+          : gap <= -20
+            ? `recorded ${recordedPct}% is ${Math.abs(gap)} pp below the textbook floor — a second pass could reach ${Math.round(est.pod_two_pass * 100)}%`
+            : null;
+        return (
+          <div className="flex items-start gap-1.5 px-2 py-1.5 rounded border text-[11px] bg-blue-500/5 border-blue-500/30 text-blue-200">
+            <Target size={12} className="mt-0.5 shrink-0" />
+            <div className="space-y-0.5 flex-1 min-w-0">
+              <div>
+                Expected POD (one pass): <span className="font-semibold">{expectedPct}%</span>
+                <span className="text-fg-4"> · two passes {Math.round(est.pod_two_pass * 100)}%</span>
+              </div>
+              <div className="text-[10px] text-fg-4 truncate" title={est.rationale}>{est.rationale}</div>
+              {hint && <div className="text-[10px] text-amber-300">{hint}</div>}
+              {recordedPct !== expectedPct && (
+                <button
+                  type="button"
+                  onClick={() => handleUpdate({ pod: est.pod_one_pass })}
+                  disabled={updating}
+                  className="text-[10px] text-accent hover:underline disabled:opacity-50"
+                >
+                  Apply {expectedPct}% to recorded POD
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="grid grid-cols-2 gap-2">
         <div>
