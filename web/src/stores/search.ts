@@ -20,6 +20,7 @@ export const DEFAULT_MAP_PREFS: Required<MapPrefs> = {
   show_teams: true,
   show_datums: true,
   show_zone_labels: true,
+  show_tide_overlay: false,
   pitch: 55,
   exaggeration: 1.3,
 };

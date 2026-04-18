@@ -7,6 +7,7 @@ import { useSearchStore } from "@/stores/search";
 import type { SearchOperation, SearchZone, SearchTeam } from "@/types/search";
 import { matchScore, matchWarning, matchTier, PLATFORM_LABEL } from "@/lib/capabilities";
 import { processTerrain } from "@/lib/terrainClassifier";
+import { nextSearchableWindow, formatWindowStatus, TIDE_STATE_FILL } from "@/lib/tideWindows";
 import { splitOnShoreline, isSplittable } from "@/lib/shorelineSplit";
 import { ChevronDown, ChevronUp, MapPin, Users, Check, Pause, Trash2, Download, Plane, Clock, ArrowUpDown, Filter, AlertTriangle, Scissors, Loader2 } from "lucide-react";
 
@@ -379,6 +380,29 @@ function ZoneDetail({
       {zone.notes && (
         <div className="text-fg-4">{zone.notes}</div>
       )}
+
+      {/* Smart-grid Tier B2. Tide-window badge for intertidal zones. Colour
+          pulls from TIDE_STATE_FILL so green = go now, amber = wait,
+          grey = off-forecast. Hidden when there are no windows at all. */}
+      {(() => {
+        const sw = zone.searchable_windows;
+        if (!sw || sw.source === "unavailable" || sw.windows.length === 0) return null;
+        const status = nextSearchableWindow(sw.windows);
+        const colour = TIDE_STATE_FILL[status.state];
+        return (
+          <div
+            className="flex items-start gap-1.5 px-2 py-1.5 rounded border text-[11px]"
+            style={{
+              backgroundColor: `${colour}1a`,
+              borderColor: `${colour}66`,
+              color: colour,
+            }}
+          >
+            <Clock size={12} className="mt-0.5 shrink-0" />
+            <span>{formatWindowStatus(status)}</span>
+          </div>
+        );
+      })()}
 
       {/* Smart-grid Tier A2. If the zone has terrain_composition AND the
           currently-assigned team has a platform_type, show a match chip

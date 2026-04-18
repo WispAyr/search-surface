@@ -9,6 +9,7 @@ import { AirspaceLayer } from "./AirspaceLayer";
 import { SarOverlays } from "./SarOverlays";
 import type { SearchOperation, SearchZone, SearchDatum } from "@/types/search";
 import { TERRAIN_FILL, compositionLabel } from "@/lib/terrainClassifier";
+import { nextSearchableWindow, formatWindowStatus, TIDE_STATE_FILL } from "@/lib/tideWindows";
 import { BASEMAPS } from "./SearchMap3D";
 import "leaflet/dist/leaflet.css";
 
@@ -196,6 +197,7 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
           isSelected={selectedZoneId === zone.id}
           onSelect={() => selectZone(zone.id)}
           teamColor={operation.teams?.find((t) => t.id === zone.assigned_team_id)?.color}
+          tideOverlay={!!mapPrefs.show_tide_overlay}
         />
       ))}
 
@@ -317,11 +319,13 @@ function ZoneLayer({
   isSelected,
   onSelect,
   teamColor,
+  tideOverlay,
 }: {
   zone: SearchZone;
   isSelected: boolean;
   onSelect: () => void;
   teamColor?: string;
+  tideOverlay?: boolean;
 }) {
   // Stroke = status/team colour (unchanged). Fill = terrain tint for
   // unassigned cells with a classification, else fall back to status colour.
@@ -330,9 +334,20 @@ function ZoneLayer({
   const strokeColor = teamColor || STATUS_COLORS[zone.status] || "#6b7280";
   const unassigned = zone.status === "unassigned" && !teamColor;
   const terrainClass = zone.terrain_class;
-  const fillColor = unassigned && terrainClass
-    ? TERRAIN_FILL[terrainClass]
-    : strokeColor;
+  // Tier B2: when the tide overlay is on AND this cell is intertidal AND it
+  // has windows attached, override the amber terrain fill with the per-state
+  // tide colour (green=go / amber=wait / grey=off-forecast).
+  const tideWindowStatus = tideOverlay
+    && terrainClass === "intertidal"
+    && zone.searchable_windows
+    && zone.searchable_windows.source !== "unavailable"
+    ? nextSearchableWindow(zone.searchable_windows.windows)
+    : null;
+  const fillColor = tideWindowStatus
+    ? TIDE_STATE_FILL[tideWindowStatus.state]
+    : unassigned && terrainClass
+      ? TERRAIN_FILL[terrainClass]
+      : strokeColor;
 
   const weight = isSelected ? 4 : PRIORITY_WEIGHTS[zone.priority] || 2;
   // Opacity ramp so classified cells are visibly distinct from unclassified:
@@ -357,10 +372,13 @@ function ZoneLayer({
   const terrainBadge = zone.terrain_composition
     ? `<br/><span style="color:#9ca3af">terrain:</span> ${compositionLabel(zone.terrain_composition)}`
     : "";
+  const tideBadge = zone.searchable_windows && zone.searchable_windows.source !== "unavailable"
+    ? `<br/><span style="color:#9ca3af">tide:</span> ${formatWindowStatus(nextSearchableWindow(zone.searchable_windows.windows))}`
+    : "";
 
   return (
     <GeoJSON
-      key={`${zone.id}:${terrainClass || "-"}`}
+      key={`${zone.id}:${terrainClass || "-"}:${tideWindowStatus?.state ?? "-"}`}
       data={zone.geometry}
       style={{
         color: strokeColor,
@@ -377,7 +395,7 @@ function ZoneLayer({
           `<b>${zone.name}</b><br/>
           ${zone.search_method.replace(/_/g, " ")}<br/>
           POD: ${Math.round(zone.cumulative_pod * 100)}%<br/>
-          Status: ${zone.status}${terrainBadge}`,
+          Status: ${zone.status}${terrainBadge}${tideBadge}`,
           { sticky: true, className: "leaflet-tooltip-dark" }
         );
       }}
@@ -443,6 +461,7 @@ function FitBounds({ operation }: { operation: SearchOperation }) {
 function PreviewZonesLayer() {
   const map = useMap();
   const previewZones = useSearchStore((s) => s.previewZones);
+  const tideOverlay = useSearchStore((s) => !!s.mapPrefs.show_tide_overlay);
   const lastCountRef = useRef(0);
 
   // Fit only when the count changes (0 → N or N → M). Including `previewZones`
@@ -482,7 +501,17 @@ function PreviewZonesLayer() {
         // we stay on the legacy priority-coloured dashed outline.
         const terrainClass = pz.terrain_class as
           | "land" | "water" | "intertidal" | "mixed" | undefined;
-        const fillColor = terrainClass ? TERRAIN_FILL[terrainClass] : strokeColor;
+        const pzTideStatus = tideOverlay
+          && terrainClass === "intertidal"
+          && pz.searchable_windows
+          && pz.searchable_windows.source !== "unavailable"
+          ? nextSearchableWindow(pz.searchable_windows.windows)
+          : null;
+        const fillColor = pzTideStatus
+          ? TIDE_STATE_FILL[pzTideStatus.state]
+          : terrainClass
+            ? TERRAIN_FILL[terrainClass]
+            : strokeColor;
         const fillOpacity = terrainClass === "water" || terrainClass === "intertidal"
           ? 0.3
           : terrainClass === "mixed"
@@ -493,7 +522,7 @@ function PreviewZonesLayer() {
         const geom: GeoJSON.Geometry =
           (pz.geometry as GeoJSON.Feature).geometry || (pz.geometry as GeoJSON.Geometry);
         const centroid = centroidOfGeometry(geom);
-        const key = `preview-${i}-${terrainClass || "-"}-${JSON.stringify(pz.geometry).length}`;
+        const key = `preview-${i}-${terrainClass || "-"}-${pzTideStatus?.state ?? "-"}-${JSON.stringify(pz.geometry).length}`;
         const items: any[] = [
           <GeoJSON
             key={key}

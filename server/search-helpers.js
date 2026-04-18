@@ -558,6 +558,64 @@ function dedupeWaypoints(pts) {
   return out;
 }
 
+// ── Smart-grid Tier B2 — tide forecast (Open-Meteo Marine) ──
+//
+// Free, no-key API; hourly sea_level_height_msl for up to 7 days forward. We
+// proxy rather than letting the browser hit Open-Meteo directly so we can
+// cache (30 min TTL is plenty — tide predictions change by seconds per day,
+// not minutes) and avoid baking their URL into the client. Also dodges CORS
+// preflights.
+//
+// Why not go through siphon? Siphon has an `open_meteo_marine` source but
+// it's a configured-per-location fetcher, not a lat/lon endpoint. The search
+// UI needs ad-hoc forecasts for whatever AOI the operator has loaded, which
+// is exactly the pattern the existing /osm/terrain + /osm/rivers endpoints
+// already follow: fetch-on-demand, cache briefly, no siphon round-trip.
+router.get('/tide', async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lon = Number(req.query.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return res.status(400).json({ error: 'lat, lon required' });
+  }
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+    return res.status(400).json({ error: 'lat/lon out of range' });
+  }
+  // Round to 2 dp so the cache keys hit for nearby cells in the same AOI —
+  // tide prediction resolution is ~km, not metres.
+  const latR = lat.toFixed(2);
+  const lonR = lon.toFixed(2);
+  const key = `tide:${latR},${lonR}`;
+  try {
+    const data = await cached(key, 30 * 60_000, async () => {
+      const url = `https://marine-api.open-meteo.com/v1/marine`
+        + `?latitude=${latR}&longitude=${lonR}`
+        + `&hourly=sea_level_height_msl`
+        + `&timezone=UTC&forecast_days=3&past_days=1`;
+      const r = await axios.get(url, { timeout: 10000, headers: { 'User-Agent': UA } });
+      const h = r.data?.hourly || {};
+      const times = Array.isArray(h.time) ? h.time : [];
+      const heights = Array.isArray(h.sea_level_height_msl) ? h.sea_level_height_msl : [];
+      // Zip into point array; drop any null samples (Open-Meteo can gap).
+      const points = [];
+      for (let i = 0; i < times.length; i++) {
+        const hM = heights[i];
+        if (hM == null || !Number.isFinite(hM)) continue;
+        points.push({ t: `${times[i]}Z`, h_m: Number(hM) });
+      }
+      return {
+        lat: Number(latR), lon: Number(lonR),
+        source: 'open-meteo marine',
+        fetched_at: new Date().toISOString(),
+        points,
+      };
+    });
+    res.json(data);
+  } catch (err) {
+    const status = err.response?.status || 502;
+    res.status(status).json({ error: `tide: ${err.message}` });
+  }
+});
+
 // ── Static simplified UK airspace (fallback for siphon) ──
 // Major CTRs/ATZs covering Scotland & NW England. Not flight-safety grade — ops awareness only.
 const STATIC_AIRSPACE = require('./data/uk-airspace-static.json');

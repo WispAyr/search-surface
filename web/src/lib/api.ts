@@ -143,6 +143,11 @@ export interface MapPrefs {
   show_teams?: boolean;
   show_datums?: boolean;
   show_zone_labels?: boolean;
+  // Smart-grid Tier B2: tint intertidal zones by their current tide-window
+  // state (now=green / upcoming=amber / past=grey) instead of the standard
+  // amber terrain fill. Only has an effect on zones that actually have
+  // searchable_windows attached.
+  show_tide_overlay?: boolean;
   pitch?: number;
   exaggeration?: number;
 }
@@ -221,16 +226,17 @@ export const searchHelpers = {
       method: "POST",
       body: JSON.stringify({ bbox }),
     }),
-  // Tides, gauges — added in Tier B2/B3 below.
-  tides: (lat: number, lon: number, hours = 48) =>
+  // Tide forecast — added in Tier B2. Open-Meteo Marine proxy; see
+  // web/src/lib/tideWindows.ts for the window-extraction logic and
+  // server/search-helpers.js `/tide` for the backend cache layer.
+  tide: (lat: number, lon: number) =>
     request<{
-      source: "xtide" | "approximate" | "unavailable";
-      port: { id: string; name: string; lat: number; lon: number } | null;
-      predictions: Array<{ time: string; height_m: number; type: "H" | "L" }>;
-      windows: Array<{ start: string; end: string; centre: string; centre_height_m: number }>;
-      generated_at: string;
-      notes?: string;
-    }>(`/search/tides?lat=${lat}&lon=${lon}&hours=${hours}`),
+      lat: number;
+      lon: number;
+      source: string;
+      fetched_at: string;
+      points: Array<{ t: string; h_m: number }>;
+    }>(`/search/tide?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`),
   gauges: (bbox: [number, number, number, number]) =>
     request<{
       gauges: Array<{

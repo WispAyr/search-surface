@@ -96,21 +96,24 @@ export type CorridorMetadata =
     };
 
 // Smart-grid Tier B2: per-zone tide windows. Non-null only for zones whose
-// geometry intersects the intertidal band. `source` is 'xtide' when the pu2
-// tide service returned real predictions, 'approximate' for the embedded
-// M2+S2 harmonic fallback.
+// geometry intersects the intertidal band. Backed by Open-Meteo Marine's
+// hourly sea_level_height_msl forecast; windows are contiguous runs where the
+// predicted sea level is at or below `threshold_m` (default 1.5 m MSL ≈ MLWS
+// on the Ayrshire coast). Start/end are linearly interpolated across the
+// threshold so they don't snap to the hourly grid.
 export interface TideWindow {
-  start: string; // ISO
-  end: string;   // ISO
-  centre: string;
-  centre_height_m: number;
+  start_iso: string;     // inclusive
+  end_iso: string;       // inclusive
+  min_height_m: number;  // minimum sea level in the window
+  max_height_m: number;  // maximum sea level in the window
 }
 export interface SearchableWindows {
-  source: 'xtide' | 'approximate' | 'unavailable';
-  port: { id: string; name: string; lat: number; lon: number } | null;
+  source: 'open-meteo marine' | 'unavailable';
+  centre: { lat: number; lon: number } | null;
+  threshold_m: number;
   windows: TideWindow[];
   generated_at: string;
-  ttl_hours: number;
+  ttl_minutes: number;
 }
 
 export interface SearchZone {

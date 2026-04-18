@@ -5,6 +5,12 @@ import bboxFn from "@turf/bbox";
 import { search, searchHelpers } from "@/lib/api";
 import { generateGrid } from "@/lib/gridGenerator";
 import { classifyCells, processTerrain, type ProcessedTerrain } from "@/lib/terrainClassifier";
+import {
+  fetchTide,
+  computeSearchableWindows,
+  buildSearchableWindows,
+  DEFAULT_THRESHOLD_M,
+} from "@/lib/tideWindows";
 import { useSearchStore } from "@/stores/search";
 import { useEscapeKey } from "@/hooks/useEscapeKey";
 import type { SearchOperation, GridGenerationParams } from "@/types/search";
@@ -234,6 +240,28 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
       }));
       setPreview(merged);
       setPreviewZones(merged as any);
+
+      // Tier B2: if any cell is intertidal, fetch the tide forecast for the
+      // bbox centre and attach the resulting window set to every intertidal
+      // cell. One fetch per generation — tide state doesn't vary across a
+      // ~0.2 sq-deg AOI in a meaningful way.
+      const hasIntertidal = classed.some((c) => c.dominant_class === "intertidal");
+      if (hasIntertidal) {
+        const centreLat = (s + n) / 2;
+        const centreLon = (w + e) / 2;
+        const forecast = await fetchTide(centreLat, centreLon);
+        const windows = forecast
+          ? computeSearchableWindows(forecast, DEFAULT_THRESHOLD_M)
+          : [];
+        const sw = buildSearchableWindows(forecast, windows, DEFAULT_THRESHOLD_M);
+        const withTide = merged.map((z, i) =>
+          classed[i].dominant_class === "intertidal"
+            ? { ...z, searchable_windows: sw }
+            : z,
+        );
+        setPreview(withTide);
+        setPreviewZones(withTide as any);
+      }
     } catch (err) {
       // Classification failure is non-fatal — the user still gets the grid,
       // just without terrain tints. Log for debugging; don't block.
