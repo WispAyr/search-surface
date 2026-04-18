@@ -4,6 +4,7 @@
 
 const express = require('express');
 const axios = require('axios');
+const { tileBbox, bboxKey, persistedOverpass } = require('./overpass-cache');
 const router = express.Router();
 
 const NOMINATIM = process.env.NOMINATIM_URL || 'https://nominatim.openstreetmap.org';
@@ -174,10 +175,15 @@ router.post('/osm/streets', async (req, res) => {
 router.post('/osm/features', async (req, res) => {
   const { bbox } = req.body || {};
   if (!bbox || bbox.length !== 4) return res.status(400).json({ error: 'bbox [s,w,n,e] required' });
-  const [s, w, n, e] = bbox;
+  const rawBbox = bbox.map(Number);
+  if (!rawBbox.every(Number.isFinite)) return res.status(400).json({ error: 'bbox must be numbers' });
+  const [rs, rw, rn, re] = rawBbox;
   // Cap area: Overpass returns timeouts fast on big bboxes.
-  if ((n - s) * (e - w) > 0.2) return res.status(400).json({ error: 'bbox too large (>0.2 sq deg)' });
-  const a = `(${bbox.join(',')})`;
+  if ((rn - rs) * (re - rw) > 0.2) return res.status(400).json({ error: 'bbox too large (>0.2 sq deg)' });
+  // Tile outward so cache keys cluster and small pans reuse results.
+  const tiled = tileBbox(rawBbox);
+  const [s, w, n, e] = tiled;
+  const a = `(${s},${w},${n},${e})`;
 
   // Split into two smaller queries so one timeout doesn't sink the other.
   // Dropped: natural=water (too many polygons in urban areas), shop=* (too many nodes).
@@ -215,20 +221,29 @@ router.post('/osm/features', async (req, res) => {
     return null;
   };
 
-  const keyBase = bbox.map(v => v.toFixed(3)).join(',');
-  const settle = async (q, key) => {
-    try { return await cached(key, 30 * 60_000, () => overpass(q, 25_000)); }
-    catch (e) { return { _error: e.message, elements: [] }; }
+  const settle = async (ns, q) => {
+    try {
+      const r = await persistedOverpass(overpass, {
+        key: bboxKey(ns, tiled),
+        ttlMs: 30 * 60_000,
+        query: q,
+        timeoutMs: 25_000,
+      });
+      return r.source === 'stale'
+        ? { ...r.value, _stale: true, _staleError: r.error }
+        : r.value;
+    } catch (e) { return { _error: e.message, elements: [] }; }
   };
   const [hz, at] = await Promise.all([
-    settle(hazardsQ, `hz:${keyBase}`),
-    settle(attractorsQ, `at:${keyBase}`),
+    settle('feat:hz', hazardsQ),
+    settle('feat:at', attractorsQ),
   ]);
   const hazards = [], attractors = [];
   for (const el of hz.elements || []) { const c = classify(el); if (c?._cat === 'hazard') { delete c._cat; hazards.push(c); } }
   for (const el of at.elements || []) { const c = classify(el); if (c?._cat === 'attractor') { delete c._cat; attractors.push(c); } }
   const errors = [hz._error, at._error].filter(Boolean);
-  res.json({ hazards, attractors, partial: errors.length > 0, errors });
+  const stale = Boolean(hz._stale || at._stale);
+  res.json({ hazards, attractors, partial: errors.length > 0, errors, stale });
 });
 
 // ── Terrain polygons for smart-grid classification ──
@@ -248,10 +263,13 @@ router.post('/osm/features', async (req, res) => {
 router.post('/osm/terrain', async (req, res) => {
   const { bbox } = req.body || {};
   if (!bbox || bbox.length !== 4) return res.status(400).json({ error: 'bbox [s,w,n,e] required' });
-  const [s, w, n, e] = bbox.map(Number);
-  if (![s, w, n, e].every(Number.isFinite)) return res.status(400).json({ error: 'bbox must be numbers' });
+  const rawBbox = bbox.map(Number);
+  if (!rawBbox.every(Number.isFinite)) return res.status(400).json({ error: 'bbox must be numbers' });
+  const [rs, rw, rn, re] = rawBbox;
   // Cap area — same guard as /osm/features, bigger bboxes time out on Overpass.
-  if ((n - s) * (e - w) > 0.2) return res.status(400).json({ error: 'bbox too large (>0.2 sq deg)' });
+  if ((rn - rs) * (re - rw) > 0.2) return res.status(400).json({ error: 'bbox too large (>0.2 sq deg)' });
+  const tiled = tileBbox(rawBbox);
+  const [s, w, n, e] = tiled;
   const a = `(${s},${w},${n},${e})`;
 
   // Split into three smaller queries so one timeout doesn't poison the other
@@ -281,15 +299,23 @@ router.post('/osm/terrain', async (req, res) => {
     );
     out geom 200;`;
 
-  const keyBase = [s, w, n, e].map((v) => v.toFixed(3)).join(',');
-  const settle = async (q, key) => {
-    try { return await cached(key, 30 * 60_000, () => overpass(q, 25_000)); }
-    catch (err) { return { _error: err.message, elements: [] }; }
+  const settle = async (ns, q) => {
+    try {
+      const r = await persistedOverpass(overpass, {
+        key: bboxKey(ns, tiled),
+        ttlMs: 30 * 60_000,
+        query: q,
+        timeoutMs: 25_000,
+      });
+      return r.source === 'stale'
+        ? { ...r.value, _stale: true, _staleError: r.error }
+        : r.value;
+    } catch (err) { return { _error: err.message, elements: [] }; }
   };
   const [wr, cr, it] = await Promise.all([
-    settle(waterQ, `terr:w:${keyBase}`),
-    settle(coastRiverQ, `terr:c:${keyBase}`),
-    settle(intertidalQ, `terr:i:${keyBase}`),
+    settle('terr:w', waterQ),
+    settle('terr:c', coastRiverQ),
+    settle('terr:i', intertidalQ),
   ]);
 
   // Convert Overpass "out geom" results → GeoJSON features. Overpass emits
@@ -364,6 +390,7 @@ router.post('/osm/terrain', async (req, res) => {
   }
 
   const errors = [wr._error, cr._error, it._error].filter(Boolean);
+  const stale = Boolean(wr._stale || cr._stale || it._stale);
   res.json({
     bbox: [s, w, n, e],
     water: waterFC,
@@ -378,6 +405,7 @@ router.post('/osm/terrain', async (req, res) => {
     },
     partial: errors.length > 0,
     errors,
+    stale,
   });
 });
 
@@ -396,9 +424,12 @@ router.post('/osm/terrain', async (req, res) => {
 router.post('/osm/rivers', async (req, res) => {
   const { bbox } = req.body || {};
   if (!bbox || bbox.length !== 4) return res.status(400).json({ error: 'bbox [s,w,n,e] required' });
-  const [s, w, n, e] = bbox.map(Number);
-  if (![s, w, n, e].every(Number.isFinite)) return res.status(400).json({ error: 'bbox must be numbers' });
-  if ((n - s) * (e - w) > 0.2) return res.status(400).json({ error: 'bbox too large (>0.2 sq deg)' });
+  const rawBbox = bbox.map(Number);
+  if (!rawBbox.every(Number.isFinite)) return res.status(400).json({ error: 'bbox must be numbers' });
+  const [rs, rw, rn, re] = rawBbox;
+  if ((rn - rs) * (re - rw) > 0.2) return res.status(400).json({ error: 'bbox too large (>0.2 sq deg)' });
+  const tiled = tileBbox(rawBbox);
+  const [s, w, n, e] = tiled;
   const a = `(${s},${w},${n},${e})`;
 
   // Linear waterways — drawn from upstream → downstream by OSM convention but
@@ -428,14 +459,22 @@ router.post('/osm/rivers', async (req, res) => {
     );
     out geom 300;`;
 
-  const keyBase = [s, w, n, e].map((v) => v.toFixed(3)).join(',');
-  const settle = async (q, key) => {
-    try { return await cached(key, 30 * 60_000, () => overpass(q, 25_000)); }
-    catch (err) { return { _error: err.message, elements: [] }; }
+  const settle = async (ns, q) => {
+    try {
+      const r = await persistedOverpass(overpass, {
+        key: bboxKey(ns, tiled),
+        ttlMs: 30 * 60_000,
+        query: q,
+        timeoutMs: 25_000,
+      });
+      return r.source === 'stale'
+        ? { ...r.value, _stale: true, _staleError: r.error }
+        : r.value;
+    } catch (err) { return { _error: err.message, elements: [] }; }
   };
   const [ww, cp] = await Promise.all([
-    settle(waterwayQ, `riv:w:${keyBase}`),
-    settle(collectionQ, `riv:c:${keyBase}`),
+    settle('riv:w', waterwayQ),
+    settle('riv:c', collectionQ),
   ]);
 
   const riversFC = { type: 'FeatureCollection', features: [] };
@@ -503,6 +542,7 @@ router.post('/osm/rivers', async (req, res) => {
   }
 
   const errors = [ww._error, cp._error].filter(Boolean);
+  const stale = Boolean(ww._stale || cp._stale);
   res.json({
     bbox: [s, w, n, e],
     rivers: riversFC,
@@ -513,6 +553,7 @@ router.post('/osm/rivers', async (req, res) => {
     },
     partial: errors.length > 0,
     errors,
+    stale,
   });
 });
 

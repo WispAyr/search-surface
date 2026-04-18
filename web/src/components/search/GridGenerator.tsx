@@ -220,6 +220,9 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
           if (res.partial) {
             setRiverWarnings((w) => [...w, "OSM waterway data partial — some branches may be missing."]);
           }
+          if ((res as any).stale) {
+            setRiverWarnings((w) => [...w, "Overpass unreachable — showing cached waterway data (up to 24h old)."]);
+          }
           params.datum = datum!;
           params.hours = riverHours;
           params.velocityMs = riverVelocity;
