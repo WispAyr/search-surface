@@ -142,6 +142,55 @@ export interface GaugeSuggestion {
   rationale: string;
 }
 
+// Build a normalised polyline for an inline SVG sparkline. Takes the gauge's
+// series (oldest-first, stage_m nullable) and maps it into the supplied box.
+// Returns the polyline points plus min/max/delta hints so the caller can
+// render a hover title like "0.77 → 0.82 m over 6h (+0.05)".
+//   - Drops nulls first; if <2 points remain, returns null (don't draw a line).
+//   - Y axis is autoscaled with a tiny (2%) padding so flat traces still show.
+//   - X is evenly spaced by index — we assume the backend's 15-min cadence
+//     is roughly regular; occasional missing samples distort by <5% and
+//     aren't worth the cost of timestamp-based spacing for a 40×14 sparkline.
+export interface SparklineData {
+  points: string;              // "x,y x,y ..." for <polyline>
+  min_m: number;
+  max_m: number;
+  delta_m: number;             // last - first
+  sample_count: number;
+}
+
+export function gaugeSparkline(
+  gauge: RiverGauge,
+  width = 48,
+  height = 14,
+  pad = 1,
+): SparklineData | null {
+  const rows = gauge.series.filter((r) => r.stage_m != null) as Array<{ stage_m: number }>;
+  if (rows.length < 2) return null;
+  const ys = rows.map((r) => r.stage_m);
+  const min = Math.min(...ys);
+  const max = Math.max(...ys);
+  const span = max - min || 0.02; // avoid div-by-zero; 2cm minimum band
+  const padded = span * 1.02;
+  const midBase = (min + max) / 2 - padded / 2;
+  const innerH = height - 2 * pad;
+  const innerW = width - 2 * pad;
+  const step = rows.length > 1 ? innerW / (rows.length - 1) : 0;
+  const points = rows.map((r, i) => {
+    const x = pad + i * step;
+    // Flip Y — SVG origin is top-left.
+    const y = pad + innerH - ((r.stage_m - midBase) / padded) * innerH;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return {
+    points,
+    min_m: min,
+    max_m: max,
+    delta_m: ys[ys.length - 1] - ys[0],
+    sample_count: rows.length,
+  };
+}
+
 export function gaugeSuggestPreset(gauge: RiverGauge): GaugeSuggestion {
   if (!gauge.latest || gauge.latest.stage_m == null) {
     return { preset_id: null, rationale: "no recent reading — pick from local knowledge" };

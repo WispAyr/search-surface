@@ -16,6 +16,7 @@ import {
   nearestGauge,
   gaugeStateLabel,
   gaugeSuggestPreset,
+  gaugeSparkline,
   GAUGE_TREND_FILL,
   type NearestGauge,
 } from "@/lib/riverGauges";
@@ -555,6 +556,7 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
               {gaugeLookup && (() => {
                 const suggest = gaugeSuggestPreset(gaugeLookup.gauge);
                 const trendColor = GAUGE_TREND_FILL[gaugeLookup.gauge.trend];
+                const spark = gaugeSparkline(gaugeLookup.gauge, 60, 16);
                 return (
                   <div className="px-3 py-2 bg-surface-700/50 rounded space-y-1">
                     <div className="flex items-center gap-2 text-[11px] text-fg-2">
@@ -563,7 +565,25 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
                         style={{ backgroundColor: trendColor }}
                         aria-hidden
                       />
-                      <span className="truncate">{gaugeStateLabel(gaugeLookup)}</span>
+                      <span className="truncate flex-1">{gaugeStateLabel(gaugeLookup)}</span>
+                      {spark && (
+                        <svg
+                          width={60}
+                          height={16}
+                          viewBox="0 0 60 16"
+                          className="shrink-0"
+                          aria-label={`Last ${spark.sample_count} readings: ${spark.min_m.toFixed(2)}–${spark.max_m.toFixed(2)} m`}
+                        >
+                          <polyline
+                            points={spark.points}
+                            fill="none"
+                            stroke={trendColor}
+                            strokeWidth={1.25}
+                            strokeLinejoin="round"
+                            strokeLinecap="round"
+                          />
+                        </svg>
+                      )}
                     </div>
                     <div className="text-[10px] text-fg-4">{suggest.rationale}</div>
                     {suggest.preset_id && (() => {
