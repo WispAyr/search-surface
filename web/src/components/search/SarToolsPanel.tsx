@@ -7,6 +7,12 @@ import type { SearchOperation } from "@/types/search";
 
 type Profile = { label: string; rings_km: number[]; water_risk: number; notes: string };
 
+// 3dp (~100m) keeps a jittered LKP in the same cache; a real move invalidates.
+const HAZARD_CACHE_TTL_MS = 6 * 3600_000;
+function hazardCacheKey(opId: string, lat: number, lon: number) {
+  return `sar:hz:${opId}:${lat.toFixed(3)}:${lon.toFixed(3)}`;
+}
+
 interface Props {
   operation: SearchOperation;
 }
@@ -61,6 +67,23 @@ export function SarToolsPanel({ operation }: Props) {
       .catch(() => setW3w(null));
   }, [datumLat, datumLon]);
 
+  // Rehydrate hazards on reload so the IC doesn't re-click mid-incident.
+  useEffect(() => {
+    if (!datumLat || !datumLon) return;
+    const key = hazardCacheKey(operation.id, datumLat, datumLon);
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || Date.now() - (parsed.savedAt || 0) > HAZARD_CACHE_TTL_MS) return;
+      setOsmFeatures(parsed.hazards || [], parsed.attractors || [], parsed.hazard_lines || []);
+      setShowHazards(true);
+      setShowAttractors(true);
+    } catch { /* ignore corrupt cache */ }
+    // setShow* are stable store actions — deliberately excluded from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operation.id, datumLat, datumLon]);
+
   const profile = subjectProfileId ? profiles[subjectProfileId] : null;
   const selectedZone = operation.zones?.find((z) => z.id === selectedZoneId);
 
@@ -74,6 +97,13 @@ export function SarToolsPanel({ operation }: Props) {
       setOsmFeatures(d.hazards, d.attractors, d.hazard_lines);
       setShowHazards(true);
       setShowAttractors(true);
+      try {
+        const key = hazardCacheKey(operation.id, datumLat, datumLon);
+        localStorage.setItem(key, JSON.stringify({
+          hazards: d.hazards, hazard_lines: d.hazard_lines, attractors: d.attractors,
+          savedAt: Date.now(),
+        }));
+      } catch { /* quota exceeded — non-fatal */ }
     } catch (e) {
       alert(`Hazard fetch failed: ${(e as Error).message}`);
     } finally {

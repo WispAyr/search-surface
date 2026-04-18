@@ -783,7 +783,7 @@ function HazardsAutoLoader() {
       setHazardsHint("Loading…");
       try {
         const d = await searchHelpers.osmFeatures([south, west, north, east]);
-        setOsmFeatures(d.hazards, d.attractors);
+        setOsmFeatures(d.hazards, d.attractors, d.hazard_lines);
         setHazardsHint(null);
       } catch (e) {
         setHazardsHint("Hazard fetch failed");
