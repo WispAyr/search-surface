@@ -833,6 +833,58 @@ router.get('/gauges', async (req, res) => {
   });
 });
 
+// ── Tenant-scoped SAR feature flags ──
+// Stored in tenant_settings under key `search.tenant_prefs`. Owner-only writes,
+// any authed tenant user can read so the Conditions panel knows which optional
+// sections to render. Unknown keys are accepted but ignored on read so we can
+// add flags without a schema migration.
+const TENANT_PREFS_KEY = 'search.tenant_prefs';
+const TENANT_PREFS_DEFAULTS = {
+  show_river_gauge_in_conditions: false,
+};
+function coerceTenantPrefs(raw) {
+  const out = { ...TENANT_PREFS_DEFAULTS };
+  if (raw && typeof raw === 'object') {
+    for (const k of Object.keys(TENANT_PREFS_DEFAULTS)) {
+      if (typeof raw[k] === typeof TENANT_PREFS_DEFAULTS[k]) out[k] = raw[k];
+    }
+  }
+  return out;
+}
+
+// Lazy-require so search-helpers stays importable in test harnesses that
+// don't wire up auth. Real mounts happen after auth-db has initialised.
+let _settingsModule = null;
+function getSettings() {
+  if (!_settingsModule) _settingsModule = require('./auth-db').settings;
+  return _settingsModule;
+}
+let _tenantMiddleware = null;
+function getTenantMiddleware() {
+  if (!_tenantMiddleware) _tenantMiddleware = require('./tenant-middleware');
+  return _tenantMiddleware;
+}
+
+router.get('/tenant-prefs', (req, res, next) => {
+  const { requireTenant } = getTenantMiddleware();
+  return requireTenant(req, res, () => {
+    const stored = getSettings().getJson(req.tenant.id, TENANT_PREFS_KEY);
+    res.json({ prefs: coerceTenantPrefs(stored) });
+  });
+});
+
+router.put('/tenant-prefs', (req, res, next) => {
+  const { requireTenant, requireRole } = getTenantMiddleware();
+  return requireTenant(req, res, () => requireRole('owner')(req, res, () => {
+    const merged = coerceTenantPrefs({
+      ...(getSettings().getJson(req.tenant.id, TENANT_PREFS_KEY) || {}),
+      ...(req.body || {}),
+    });
+    getSettings().setJson(req.tenant.id, TENANT_PREFS_KEY, merged);
+    res.json({ prefs: merged });
+  }));
+});
+
 // ── Static simplified UK airspace (fallback for siphon) ──
 // Major CTRs/ATZs covering Scotland & NW England. Not flight-safety grade — ops awareness only.
 const STATIC_AIRSPACE = require('./data/uk-airspace-static.json');

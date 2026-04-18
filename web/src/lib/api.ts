@@ -237,6 +237,16 @@ export const searchHelpers = {
       fetched_at: string;
       points: Array<{ t: string; h_m: number }>;
     }>(`/search/tide?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`),
+  // Tenant-scoped SAR feature flags. GET is available to any authed user so
+  // the Conditions panel knows which optional sections to render; PUT is
+  // owner-only (enforced server-side). Unknown keys are ignored.
+  getTenantPrefs: () =>
+    request<{ prefs: { show_river_gauge_in_conditions: boolean } }>(`/search/tenant-prefs`),
+  putTenantPrefs: (prefs: Partial<{ show_river_gauge_in_conditions: boolean }>) =>
+    request<{ prefs: { show_river_gauge_in_conditions: boolean } }>(`/search/tenant-prefs`, {
+      method: "PUT",
+      body: JSON.stringify(prefs),
+    }),
   gauges: (bbox: [number, number, number, number]) =>
     request<{
       gauges: Array<{

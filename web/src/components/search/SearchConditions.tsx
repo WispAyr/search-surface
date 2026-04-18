@@ -1,8 +1,16 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { siphon, prism } from "@/lib/api";
+import { siphon, prism, searchHelpers, auth as authApi } from "@/lib/api";
 import type { SearchOperation } from "@/types/search";
+import {
+  fetchGauges,
+  nearestGauge,
+  gaugeStateLabel,
+  gaugeSparkline,
+  GAUGE_TREND_FILL,
+  type NearestGauge,
+} from "@/lib/riverGauges";
 import {
   Sun, Moon, Cloud, CloudRain, Wind, Thermometer, Eye, Droplets,
   Clock, AlertTriangle, ChevronDown, ChevronUp, Compass, Timer,
@@ -81,8 +89,77 @@ export function SearchConditions({ operation }: { operation: SearchOperation }) 
   const [data, setData] = useState<ConditionsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    light: true, weather: true, storm: true, scent: true, survival: true, drone: true, forecast: false, detail: false,
+    light: true, weather: true, storm: true, scent: true, survival: true, drone: true, gauge: true, forecast: false, detail: false,
   });
+  // Tier B3 — optional river-gauge block. Owner toggles; any user reads.
+  const [gaugeEnabled, setGaugeEnabled] = useState<boolean>(false);
+  const [gaugeResult, setGaugeResult] = useState<NearestGauge | null>(null);
+  const [gaugePartial, setGaugePartial] = useState<boolean>(false);
+  const [gaugeErr, setGaugeErr] = useState<string | null>(null);
+  const [gaugeLoading, setGaugeLoading] = useState<boolean>(false);
+  const [isOwner, setIsOwner] = useState<boolean>(false);
+  const [togglePending, setTogglePending] = useState<boolean>(false);
+
+  // Load tenant pref + role once. The pref call is cheap (one SELECT) and
+  // auth/me is already cached by the shell — we re-read to grab the role.
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const [prefs, me] = await Promise.all([
+          searchHelpers.getTenantPrefs().catch(() => null),
+          authApi.me().catch(() => null),
+        ]);
+        if (!mounted) return;
+        if (prefs?.prefs) setGaugeEnabled(!!prefs.prefs.show_river_gauge_in_conditions);
+        if (me?.user?.role === "owner") setIsOwner(true);
+      } catch {}
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  // Fetch nearest gauge when the feature is on AND we have a datum. Refetch
+  // every 10 min so a long-running ops panel doesn't show stale water.
+  useEffect(() => {
+    if (!gaugeEnabled) { setGaugeResult(null); return; }
+    const lat = operation.datum_lat;
+    const lon = operation.datum_lon;
+    if (lat == null || lon == null) return;
+    let mounted = true;
+    async function go() {
+      setGaugeLoading(true);
+      setGaugeErr(null);
+      try {
+        const dDeg = 20000 / 111000;
+        const dLon = dDeg / Math.cos((lat! * Math.PI) / 180);
+        const bbox: [number, number, number, number] = [lat! - dDeg, lon! - dLon, lat! + dDeg, lon! + dLon];
+        const res = await fetchGauges(bbox);
+        if (!mounted) return;
+        if (!res) { setGaugeErr("Gauge service unreachable"); return; }
+        setGaugePartial(res.partial);
+        const nearest = nearestGauge(res.gauges, lat!, lon!);
+        if (!nearest) { setGaugeErr("No gauges with recent readings within 20 km"); return; }
+        setGaugeResult(nearest);
+      } finally {
+        if (mounted) setGaugeLoading(false);
+      }
+    }
+    go();
+    const iv = setInterval(go, 600_000);
+    return () => { mounted = false; clearInterval(iv); };
+  }, [gaugeEnabled, operation.datum_lat, operation.datum_lon]);
+
+  async function handleToggleGauge(next: boolean) {
+    setTogglePending(true);
+    try {
+      const res = await searchHelpers.putTenantPrefs({ show_river_gauge_in_conditions: next });
+      setGaugeEnabled(!!res.prefs.show_river_gauge_in_conditions);
+    } catch (err: any) {
+      setGaugeErr(err?.message || "Failed to save preference");
+    } finally {
+      setTogglePending(false);
+    }
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -304,10 +381,72 @@ export function SearchConditions({ operation }: { operation: SearchOperation }) 
         </Section>
       )}
 
+      {/* ── RIVER GAUGE (Tier B3) — tenant-gated, owner toggles ── */}
+      {(gaugeEnabled || isOwner) && (
+        <Section title="Nearest River Gauge" icon={<Droplets size={12} />} open={expanded.gauge} toggle={() => toggle("gauge")}>
+          {isOwner && (
+            <label className="flex items-center gap-2 text-[10px] text-fg-3 mb-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={gaugeEnabled}
+                disabled={togglePending}
+                onChange={(e) => handleToggleGauge(e.target.checked)}
+                className="accent-blue-500"
+              />
+              <span>Show nearest gauge for any operation (team-wide)</span>
+              {togglePending && <span className="text-fg-4">saving…</span>}
+            </label>
+          )}
+          {!gaugeEnabled && isOwner && (
+            <div className="text-[10px] text-fg-4 italic">Enable to surface SEPA/EA gauge stage + trend alongside the operation datum.</div>
+          )}
+          {gaugeEnabled && (operation.datum_lat == null || operation.datum_lon == null) && (
+            <div className="text-[10px] text-fg-4 italic">Set an operation datum to see the nearest gauge.</div>
+          )}
+          {gaugeEnabled && operation.datum_lat != null && operation.datum_lon != null && (
+            <>
+              {gaugeLoading && !gaugeResult && (
+                <div className="text-[10px] text-fg-4">Loading gauge data…</div>
+              )}
+              {gaugeErr && !gaugeResult && !gaugeLoading && (
+                <div className="text-[10px] text-amber-400">{gaugeErr}</div>
+              )}
+              {gaugeResult && <GaugeChip nearest={gaugeResult} partial={gaugePartial} />}
+            </>
+          )}
+        </Section>
+      )}
+
       {/* ── DRONE CONDITIONS ── */}
       <Section title="Drone Operations" icon={<Wind size={12} />} open={expanded.drone} toggle={() => toggle("drone")}>
         <DroneConditions windSpeed={windSpeed} windGust={windGust} visibility={visibility} precipitation={precipitation} cloudCover={cloudCover} />
       </Section>
+    </div>
+  );
+}
+
+function GaugeChip({ nearest, partial }: { nearest: NearestGauge; partial: boolean }) {
+  const spark = gaugeSparkline(nearest.gauge, 60, 16);
+  const trendColor = GAUGE_TREND_FILL[nearest.gauge.trend];
+  const delta = spark?.delta_m;
+  const sparkTitle = spark
+    ? `${spark.min_m.toFixed(2)} → ${spark.max_m.toFixed(2)} m (Δ ${delta! >= 0 ? "+" : ""}${delta!.toFixed(2)}) · ${spark.sample_count} samples`
+    : "";
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2 text-[11px] text-fg-2">
+        {spark && (
+          <svg width={60} height={16} className="shrink-0" aria-label={sparkTitle}>
+            <title>{sparkTitle}</title>
+            <polyline points={spark.points} fill="none" stroke={trendColor} strokeWidth={1.25} />
+          </svg>
+        )}
+        <span className="truncate">{gaugeStateLabel(nearest)}</span>
+      </div>
+      {partial && (
+        <div className="text-[9px] text-amber-400">One provider unavailable — reading from single source.</div>
+      )}
+      <div className="text-[9px] text-fg-4">Source: SEPA KiWIS + EA flood-monitoring · refreshes every 10 min · observational only, not a velocity recommendation.</div>
     </div>
   );
 }
