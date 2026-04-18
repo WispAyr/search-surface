@@ -375,6 +375,12 @@ function ZoneLayer({
   const tideBadge = zone.searchable_windows && zone.searchable_windows.source !== "unavailable"
     ? `<br/><span style="color:#9ca3af">tide:</span> ${formatWindowStatus(nextSearchableWindow(zone.searchable_windows.windows))}`
     : "";
+  // Tier B3 — gauge snapshot from corridor metadata (frozen at plan time).
+  const corridorMeta = (zone.geometry?.properties as any)?.corridor_metadata
+    ?? zone.corridor_metadata;
+  const gaugeBadge = corridorMeta?.kind === "parent" && corridorMeta.gauge_ref && corridorMeta.gauge_ref.stage_m != null
+    ? `<br/><span style="color:#9ca3af">gauge:</span> ${corridorMeta.gauge_ref.stage_m.toFixed(2)} m · ${corridorMeta.gauge_ref.trend} · ${corridorMeta.gauge_ref.label}`
+    : "";
 
   return (
     <GeoJSON
@@ -395,7 +401,7 @@ function ZoneLayer({
           `<b>${zone.name}</b><br/>
           ${zone.search_method.replace(/_/g, " ")}<br/>
           POD: ${Math.round(zone.cumulative_pod * 100)}%<br/>
-          Status: ${zone.status}${terrainBadge}${tideBadge}`,
+          Status: ${zone.status}${terrainBadge}${tideBadge}${gaugeBadge}`,
           { sticky: true, className: "leaflet-tooltip-dark" }
         );
       }}

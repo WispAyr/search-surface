@@ -616,6 +616,223 @@ router.get('/tide', async (req, res) => {
   }
 });
 
+// ── Smart-grid Tier B3 — river gauges (SEPA KiWIS + EA flood-monitoring) ──
+//
+// Tier B1's river-corridor generator takes a surface velocity as input (operator
+// picks from a preset). B3 lets that velocity be *observed* instead of *guessed*:
+// fetch the nearest live gauge reading for the LKP's catchment and surface its
+// stage + trend + a suggested m/s so the corridor reflects real conditions.
+//
+// Two sources, merged:
+//   - SEPA KiWIS (Scotland) — the primary source for Ayrshire/Clyde ops. The
+//     station list is ~1 MB of JSON, cached 24h because metadata doesn't move.
+//     Per-station `15minute` series is cached 10 min per station to keep volley
+//     counts sane when multiple operators re-open the same AOI.
+//   - EA flood-monitoring (England/Wales) — picks up stations south of the
+//     border, used when an op crosses into Cumbria/Northumbria.
+//
+// Partial=true is set when either side fails so a SEPA outage doesn't block
+// ops that could still be served by EA gauges (and vice versa).
+const SEPA_KIWIS = 'https://timeseries.sepa.org.uk/KiWIS/KiWIS';
+const EA_FLOOD = 'https://environment.data.gov.uk/flood-monitoring';
+
+// Haversine in metres. Used to rank stations by distance to bbox centre so we
+// only fetch readings for the N closest (SEPA caps aside, a bbox can hold 40+
+// stations and we don't want 40 sequential reading fetches).
+function haversineM(aLat, aLon, bLat, bLon) {
+  const R = 6_371_000;
+  const toR = (d) => (d * Math.PI) / 180;
+  const dLat = toR(bLat - aLat);
+  const dLon = toR(bLon - aLon);
+  const s = Math.sin(dLat / 2) ** 2
+    + Math.cos(toR(aLat)) * Math.cos(toR(bLat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+// Trend from a series of {time, stage_m}. Compares the mean of the *latest* ~1h
+// against the mean of the *earliest* ~1h of the supplied window. Threshold is
+// 5 cm — anything smaller is steady-state noise on a typical SEPA gauge.
+function computeTrend(series) {
+  const rows = series.filter((r) => r.stage_m != null);
+  if (rows.length < 4) return 'unknown';
+  const head = rows.slice(0, Math.max(2, Math.floor(rows.length / 4)));
+  const tail = rows.slice(-Math.max(2, Math.floor(rows.length / 4)));
+  const mean = (xs) => xs.reduce((a, r) => a + r.stage_m, 0) / xs.length;
+  const delta = mean(tail) - mean(head);
+  if (Math.abs(delta) < 0.05) return 'steady';
+  return delta > 0 ? 'rising' : 'falling';
+}
+
+async function fetchSepaStationList() {
+  // Cached 24h — station locations don't move. ~1 MB payload so we trim to
+  // just the fields we need before caching to keep memory footprint small.
+  return cached('sepa:stations', 24 * 60 * 60_000, async () => {
+    const url = `${SEPA_KIWIS}?service=kisters&type=queryServices&request=getStationList`
+      + `&format=objson&parametertype_name=S`
+      + `&returnfields=station_no,station_id,station_name,station_latitude,station_longitude`;
+    const r = await axios.get(url, { timeout: 15000, headers: { 'User-Agent': UA } });
+    return (Array.isArray(r.data) ? r.data : [])
+      .map((s) => ({
+        station_id: String(s.station_id),
+        station_no: String(s.station_no),
+        station_name: String(s.station_name || '').trim(),
+        lat: Number(s.station_latitude),
+        lon: Number(s.station_longitude),
+      }))
+      .filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lon));
+  });
+}
+
+// Resolve a SEPA station_id to its `15minute` ts_id. Cached a full day because
+// ts_ids are permanent once assigned. Some stations only have daily/monthly
+// aggregates — those return null and the caller skips them.
+async function sepaTsIdFor(stationId) {
+  return cached(`sepa:ts:${stationId}`, 24 * 60 * 60_000, async () => {
+    const url = `${SEPA_KIWIS}?service=kisters&type=queryServices&request=getTimeseriesList`
+      + `&format=objson&station_id=${stationId}&parametertype_name=S`
+      + `&returnfields=ts_id,ts_name`;
+    const r = await axios.get(url, { timeout: 10000, headers: { 'User-Agent': UA } });
+    const list = Array.isArray(r.data) ? r.data : [];
+    const live = list.find((t) => t.ts_name === '15minute');
+    return live ? String(live.ts_id) : null;
+  });
+}
+
+async function sepaLatestFor(stationId) {
+  // One-stop: resolve ts_id, fetch last 6h of values, extract trend + latest.
+  // Cached 10 min per station so repeat UI opens are cheap.
+  return cached(`sepa:latest:${stationId}`, 10 * 60_000, async () => {
+    const tsId = await sepaTsIdFor(stationId);
+    if (!tsId) return { latest: null, series: [], trend: 'unknown' };
+    const url = `${SEPA_KIWIS}?service=kisters&type=queryServices&request=getTimeseriesValues`
+      + `&format=dajson&ts_id=${tsId}&period=PT6H`;
+    const r = await axios.get(url, { timeout: 10000, headers: { 'User-Agent': UA } });
+    const row0 = Array.isArray(r.data) ? r.data[0] : null;
+    const raw = row0 && Array.isArray(row0.data) ? row0.data : [];
+    const series = raw
+      .map(([t, v]) => ({ time: String(t), stage_m: v == null ? null : Number(v), flow_cumecs: null }))
+      .filter((s) => s.stage_m != null && Number.isFinite(s.stage_m));
+    const latest = series.length ? series[series.length - 1] : null;
+    return { latest, series, trend: computeTrend(series) };
+  });
+}
+
+async function fetchSepaGaugesInBbox(bbox, maxStations = 15) {
+  const [s, w, n, e] = bbox;
+  const stations = await fetchSepaStationList();
+  const inBbox = stations.filter((x) => x.lat >= s && x.lat <= n && x.lon >= w && x.lon <= e);
+  // Rank by distance to centre so we fetch readings for the closest ones.
+  const cLat = (s + n) / 2;
+  const cLon = (w + e) / 2;
+  inBbox.sort((a, b) =>
+    haversineM(cLat, cLon, a.lat, a.lon) - haversineM(cLat, cLon, b.lat, b.lon),
+  );
+  const picked = inBbox.slice(0, maxStations);
+  // Parallel per-station reading fetch. Settle — one slow station shouldn't
+  // drag the whole response.
+  const readings = await Promise.allSettled(picked.map((st) => sepaLatestFor(st.station_id)));
+  return picked.map((st, i) => {
+    const r = readings[i];
+    const v = r.status === 'fulfilled' ? r.value : { latest: null, series: [], trend: 'unknown' };
+    return {
+      id: `sepa:${st.station_id}`,
+      label: st.station_name,
+      lat: st.lat,
+      lon: st.lon,
+      source: 'SEPA',
+      latest: v.latest,
+      series: v.series,
+      trend: v.trend,
+      state: 'unknown', // rating-curve-free state classification is a later tier
+    };
+  });
+}
+
+async function fetchEaGaugesInBbox(bbox, maxStations = 15) {
+  // EA doesn't support bbox directly — we query by centre+radius covering the
+  // bbox corners, then filter client-side.
+  const [s, w, n, e] = bbox;
+  const cLat = (s + n) / 2;
+  const cLon = (w + e) / 2;
+  const distKm = haversineM(cLat, cLon, n, e) / 1000;
+  const url = `${EA_FLOOD}/id/stations?parameter=level`
+    + `&lat=${cLat.toFixed(4)}&long=${cLon.toFixed(4)}&dist=${Math.ceil(distKm)}&_limit=100`;
+  return cached(`ea:gauges:${cLat.toFixed(3)},${cLon.toFixed(3)},${Math.ceil(distKm)}`, 10 * 60_000, async () => {
+    const r = await axios.get(url, { timeout: 10000, headers: { 'User-Agent': UA } });
+    const items = Array.isArray(r.data?.items) ? r.data.items : [];
+    const inBbox = items.filter((st) => {
+      const lat = Number(st.lat), lon = Number(st.long);
+      return Number.isFinite(lat) && Number.isFinite(lon) && lat >= s && lat <= n && lon >= w && lon <= e;
+    });
+    // Rank + trim
+    inBbox.sort((a, b) =>
+      haversineM(cLat, cLon, Number(a.lat), Number(a.long))
+      - haversineM(cLat, cLon, Number(b.lat), Number(b.long)),
+    );
+    const picked = inBbox.slice(0, maxStations);
+    // Fetch last 6h of readings per station in parallel.
+    const readings = await Promise.allSettled(picked.map(async (st) => {
+      const id = String(st.notation || st['@id']?.split('/').pop() || '');
+      if (!id) return { latest: null, series: [], trend: 'unknown' };
+      const readUrl = `${EA_FLOOD}/id/stations/${id}/readings?parameter=level&_sorted&_limit=24`;
+      const rr = await axios.get(readUrl, { timeout: 10000, headers: { 'User-Agent': UA } });
+      const rowsRaw = Array.isArray(rr.data?.items) ? rr.data.items : [];
+      const series = rowsRaw
+        .map((row) => ({ time: String(row.dateTime), stage_m: Number(row.value), flow_cumecs: null }))
+        .filter((x) => Number.isFinite(x.stage_m))
+        .reverse(); // API returns newest first
+      const latest = series.length ? series[series.length - 1] : null;
+      return { latest, series, trend: computeTrend(series) };
+    }));
+    return picked.map((st, i) => {
+      const v = readings[i].status === 'fulfilled' ? readings[i].value : { latest: null, series: [], trend: 'unknown' };
+      return {
+        id: `ea:${st.notation || st.label}`,
+        label: String(st.label || st.riverName || st.notation || 'EA gauge'),
+        lat: Number(st.lat),
+        lon: Number(st.long),
+        source: 'EA',
+        latest: v.latest,
+        series: v.series,
+        trend: v.trend,
+        state: 'unknown',
+      };
+    });
+  });
+}
+
+router.get('/gauges', async (req, res) => {
+  const raw = String(req.query.bbox || '').split(',').map(Number);
+  if (raw.length !== 4 || !raw.every(Number.isFinite)) {
+    return res.status(400).json({ error: 'bbox=s,w,n,e required' });
+  }
+  const [s, w, n, e] = raw;
+  if (s >= n || w >= e || (n - s) > 2 || (e - w) > 2) {
+    return res.status(400).json({ error: 'bbox invalid or too large (max 2° per side)' });
+  }
+  const errors = [];
+  let partial = false;
+  const [sepa, ea] = await Promise.all([
+    fetchSepaGaugesInBbox([s, w, n, e]).catch((err) => {
+      errors.push(`sepa: ${err.message}`);
+      partial = true;
+      return [];
+    }),
+    fetchEaGaugesInBbox([s, w, n, e]).catch((err) => {
+      errors.push(`ea: ${err.message}`);
+      partial = true;
+      return [];
+    }),
+  ]);
+  res.json({
+    gauges: [...sepa, ...ea],
+    bbox: [s, w, n, e],
+    generated_at: new Date().toISOString(),
+    partial,
+    errors,
+  });
+});
+
 // ── Static simplified UK airspace (fallback for siphon) ──
 // Major CTRs/ATZs covering Scotland & NW England. Not flight-safety grade — ops awareness only.
 const STATIC_AIRSPACE = require('./data/uk-airspace-static.json');

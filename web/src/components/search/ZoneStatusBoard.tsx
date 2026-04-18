@@ -8,8 +8,9 @@ import type { SearchOperation, SearchZone, SearchTeam } from "@/types/search";
 import { matchScore, matchWarning, matchTier, PLATFORM_LABEL } from "@/lib/capabilities";
 import { processTerrain } from "@/lib/terrainClassifier";
 import { nextSearchableWindow, formatWindowStatus, TIDE_STATE_FILL } from "@/lib/tideWindows";
+import { GAUGE_TREND_FILL } from "@/lib/riverGauges";
 import { splitOnShoreline, isSplittable } from "@/lib/shorelineSplit";
-import { ChevronDown, ChevronUp, MapPin, Users, Check, Pause, Trash2, Download, Plane, Clock, ArrowUpDown, Filter, AlertTriangle, Scissors, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronUp, MapPin, Users, Check, Pause, Trash2, Download, Plane, Clock, ArrowUpDown, Filter, AlertTriangle, Scissors, Loader2, Activity } from "lucide-react";
 
 const STATUS_BADGE: Record<string, { bg: string; label: string }> = {
   unassigned: { bg: "bg-surface-600 text-fg-4", label: "Unassigned" },
@@ -400,6 +401,38 @@ function ZoneDetail({
           >
             <Clock size={12} className="mt-0.5 shrink-0" />
             <span>{formatWindowStatus(status)}</span>
+          </div>
+        );
+      })()}
+
+      {/* Smart-grid Tier B3. Gauge snapshot chip for river-corridor zones.
+          Frozen at plan time (pulled from corridor_metadata.gauge_ref) so the
+          chip tells the operator what the water was doing when they drew
+          this corridor, not what it reads now. */}
+      {(() => {
+        const meta = (zone.geometry?.properties as any)?.corridor_metadata
+          ?? zone.corridor_metadata;
+        if (!meta || meta.kind !== "parent" || !meta.gauge_ref) return null;
+        const ref = meta.gauge_ref;
+        if (ref.stage_m == null) return null;
+        const colour = GAUGE_TREND_FILL[ref.trend as keyof typeof GAUGE_TREND_FILL] ?? GAUGE_TREND_FILL.unknown;
+        const km = ref.distance_m < 1000
+          ? `${Math.round(ref.distance_m)} m`
+          : `${(ref.distance_m / 1000).toFixed(1)} km`;
+        return (
+          <div
+            className="flex items-start gap-1.5 px-2 py-1.5 rounded border text-[11px]"
+            style={{
+              backgroundColor: `${colour}1a`,
+              borderColor: `${colour}66`,
+              color: colour,
+            }}
+            title={`observed ${new Date(ref.observed_at).toLocaleString()}`}
+          >
+            <Activity size={12} className="mt-0.5 shrink-0" />
+            <span>
+              Gauge: {ref.stage_m.toFixed(2)} m · {ref.trend} · {ref.label} ({ref.source}) · {km}
+            </span>
           </div>
         );
       })()}

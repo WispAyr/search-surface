@@ -11,10 +11,18 @@ import {
   buildSearchableWindows,
   DEFAULT_THRESHOLD_M,
 } from "@/lib/tideWindows";
+import {
+  fetchGauges,
+  nearestGauge,
+  gaugeStateLabel,
+  gaugeSuggestPreset,
+  GAUGE_TREND_FILL,
+  type NearestGauge,
+} from "@/lib/riverGauges";
 import { useSearchStore } from "@/stores/search";
 import { useEscapeKey } from "@/hooks/useEscapeKey";
 import type { SearchOperation, GridGenerationParams } from "@/types/search";
-import { X, Grid3X3, Hexagon, RotateCw, Route, Target, Dog, Plane, Waves, Loader2, AlertTriangle } from "lucide-react";
+import { X, Grid3X3, Hexagon, RotateCw, Route, Target, Dog, Plane, Waves, Loader2, AlertTriangle, Activity } from "lucide-react";
 
 interface GridGeneratorProps {
   operation: SearchOperation;
@@ -65,6 +73,12 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
   const [riverFetching, setRiverFetching] = useState(false);
   const [riverWarnings, setRiverWarnings] = useState<string[]>([]);
   const [riverError, setRiverError] = useState<string | null>(null);
+  // Tier B3 — nearest river gauge. Fetched on operator demand (button), not
+  // automatically; auto-fetch would hit SEPA/EA on every LKP nudge.
+  const [gaugeLookup, setGaugeLookup] = useState<NearestGauge | null>(null);
+  const [gaugeFetching, setGaugeFetching] = useState(false);
+  const [gaugeError, setGaugeError] = useState<string | null>(null);
+  const [gaugePartial, setGaugePartial] = useState(false);
   const [preview, setPreview] = useState<any[]>([]);
   const [creating, setCreating] = useState(false);
   const [classifying, setClassifying] = useState(false);
@@ -86,6 +100,41 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
     : datum
       ? "Primary datum"
       : "No datum";
+
+  // Tier B3 — operator-triggered gauge lookup. Builds a ~20km bbox around the
+  // LKP (big enough to catch the nearest SEPA/EA station on most UK rivers,
+  // small enough to avoid flooding the response with irrelevant stations) and
+  // picks the closest gauge with a live reading.
+  const handleLookupGauge = async () => {
+    if (!datum) return;
+    setGaugeFetching(true);
+    setGaugeError(null);
+    try {
+      const dDeg = 20000 / 111000; // ≈ 0.18°
+      const dLon = dDeg / Math.cos((datum[0] * Math.PI) / 180);
+      const bbox: [number, number, number, number] = [
+        datum[0] - dDeg,
+        datum[1] - dLon,
+        datum[0] + dDeg,
+        datum[1] + dLon,
+      ];
+      const res = await fetchGauges(bbox);
+      if (!res) { setGaugeError("Gauge service unreachable"); setGaugeLookup(null); return; }
+      setGaugePartial(res.partial);
+      const nearest = nearestGauge(res.gauges, datum[0], datum[1]);
+      if (!nearest) {
+        setGaugeError("No gauges with recent readings within 20 km");
+        setGaugeLookup(null);
+        return;
+      }
+      setGaugeLookup(nearest);
+    } catch (err: any) {
+      setGaugeError(err?.message || "Gauge lookup failed");
+      setGaugeLookup(null);
+    } finally {
+      setGaugeFetching(false);
+    }
+  };
 
   const handleGenerate = async () => {
     if (!datum && gridType !== "route_buffer") return;
@@ -182,8 +231,24 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
       if (zones.length === 0) {
         setRiverError("No corridor generated — LKP may be too far from any OSM waterway, or no downstream network is available.");
       } else {
-        const meta = (zones[0].geometry?.properties as any)?.corridor_metadata;
+        const parentProps = (zones[0].geometry?.properties as any) || {};
+        const meta = parentProps.corridor_metadata;
         if (meta?.warnings) setRiverWarnings(meta.warnings);
+        // Tier B3 — freeze the current gauge snapshot onto the parent corridor
+        // metadata so the zone card shows what the operator was looking at at
+        // plan time, not what the gauge reads later.
+        if (meta?.kind === "parent" && gaugeLookup?.gauge.latest) {
+          const g = gaugeLookup.gauge;
+          meta.gauge_ref = {
+            id: g.id,
+            label: g.label,
+            source: g.source,
+            stage_m: g.latest!.stage_m,
+            trend: g.trend,
+            observed_at: g.latest!.time,
+            distance_m: Math.round(gaugeLookup.distance_m),
+          };
+        }
       }
     }
     // Show zones immediately (uncoloured by terrain) so the operator isn't
@@ -463,6 +528,63 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
                   <option key={p.id} value={p.id}>{p.label}</option>
                 ))}
               </select>
+            </div>
+            {/* Tier B3 — nearest river gauge. Operator clicks to fetch; the
+              result informs but does not mutate the velocity preset. */}
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleLookupGauge}
+                  disabled={!datum || gaugeFetching}
+                  className="flex items-center gap-1.5 px-2.5 py-1 bg-surface-700 hover:bg-surface-600 disabled:opacity-50 disabled:cursor-not-allowed border border-surface-600 rounded text-xs text-fg-2"
+                >
+                  {gaugeFetching ? <Loader2 size={12} className="animate-spin" /> : <Activity size={12} />}
+                  {gaugeLookup ? "Refresh nearest gauge" : "Use nearest gauge"}
+                </button>
+                {gaugePartial && (
+                  <span className="text-[10px] text-amber-300" title="One of SEPA/EA failed — results may be incomplete">partial</span>
+                )}
+              </div>
+              {gaugeError && (
+                <div className="flex items-start gap-2 p-2 bg-amber-500/10 border border-amber-500/30 rounded text-[11px] text-amber-300">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  <span>{gaugeError}</span>
+                </div>
+              )}
+              {gaugeLookup && (() => {
+                const suggest = gaugeSuggestPreset(gaugeLookup.gauge);
+                const trendColor = GAUGE_TREND_FILL[gaugeLookup.gauge.trend];
+                return (
+                  <div className="px-3 py-2 bg-surface-700/50 rounded space-y-1">
+                    <div className="flex items-center gap-2 text-[11px] text-fg-2">
+                      <span
+                        className="inline-block w-2 h-2 rounded-full shrink-0"
+                        style={{ backgroundColor: trendColor }}
+                        aria-hidden
+                      />
+                      <span className="truncate">{gaugeStateLabel(gaugeLookup)}</span>
+                    </div>
+                    <div className="text-[10px] text-fg-4">{suggest.rationale}</div>
+                    {suggest.preset_id && (() => {
+                      const preset = RIVER_VELOCITY_PRESETS.find((p) => p.id === suggest.preset_id);
+                      if (!preset) return null;
+                      const alreadyApplied = Math.abs(riverVelocity - preset.v) < 0.01;
+                      return alreadyApplied ? (
+                        <div className="text-[10px] text-fg-4">Preset already at {preset.label}.</div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setRiverVelocity(preset.v)}
+                          className="text-[10px] text-accent hover:underline"
+                        >
+                          Apply suggestion: {preset.label}
+                        </button>
+                      );
+                    })()}
+                  </div>
+                );
+              })()}
             </div>
             <div className="flex items-center gap-2 px-3 py-2 bg-surface-700/50 rounded">
               <label className="flex items-center gap-2 text-xs text-fg-2 cursor-pointer">

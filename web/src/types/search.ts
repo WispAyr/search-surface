@@ -85,6 +85,19 @@ export type CorridorMetadata =
       centreline: Array<[number, number]>;
       chainage: Array<{ lon: number; lat: number; d: number }>;
       warnings: string[];
+      // Smart-grid Tier B3 — snapshot of the nearest river gauge at generation
+      // time, if the operator invoked "Use nearest gauge". Frozen at plan time
+      // so the zone card shows what the operator was looking at, not what the
+      // gauge reads an hour later.
+      gauge_ref?: {
+        id: string;
+        label: string;
+        source: 'SEPA' | 'EA';
+        stage_m: number | null;
+        trend: 'rising' | 'falling' | 'steady' | 'unknown';
+        observed_at: string;
+        distance_m: number;
+      } | null;
     }
   | {
       kind: 'collection_point';
