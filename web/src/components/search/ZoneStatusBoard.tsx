@@ -234,6 +234,10 @@ function ZoneDetail({
   // Local POD state so the slider/input stays responsive while the server
   // round-trips. Reset on debounce-committed save.
   const [podDraft, setPodDraft] = useState<number>(Math.round((zone.cumulative_pod || 0) * 100));
+  // Try-on team for the Expected POD chip when no team is assigned yet —
+  // lets the IC preview "what would this zone achieve if I sent Alpha?" during
+  // grid planning without actually committing the assignment.
+  const [previewTeamId, setPreviewTeamId] = useState<string | null>(null);
   const { setRightPanel } = useSearchStore();
 
   const handleUpdate = async (fields: Record<string, unknown>) => {
@@ -361,55 +365,127 @@ function ZoneDetail({
       </div>
 
       {/* Smart-grid Tier A4 — Expected POD estimate from terrain + team +
-          sweep-width table. Shown only when we have both a team and a
-          preset that makes sense for the terrain. "Expected" = textbook
-          floor for comparison against the IC-set value above. */}
+          sweep-width table. Three render paths:
+          1. Zone has an assigned team → compare its cumulative against the
+             textbook floor for the passes logged. Apply button bridges a gap.
+          2. Zone is unassigned but the op has teams with viable presets →
+             "try-on" picker so IC can preview POD per candidate team during
+             grid planning. No Apply button (no sweep context yet).
+          3. Op has no team, or no team in the op has a viable preset for the
+             zone's terrain → placeholder explaining what's missing. */}
       {(() => {
         const assigned = zone.assigned_team_id ? teams.find((t) => t.id === zone.assigned_team_id) : null;
-        const est = estimateZonePOD(zone, assigned);
-        if (!est) return null;
-        // Use sweep_count so we compare zone.pod against the cumulative floor
-        // for *actual* passes logged. Pre-sweep we show the single-pass target.
-        const passesDone = Math.max(0, zone.sweep_count || 0);
-        const passesForExpected = passesDone > 0 ? passesDone : 1;
-        const expected = podAfterPasses(est, passesForExpected);
-        const nextPass = podAfterPasses(est, passesForExpected + 1);
+        if (assigned) {
+          const est = estimateZonePOD(zone, assigned);
+          if (!est) return null; // Team assigned but terrain/platform mismatch — rare.
+          // Use sweep_count so we compare zone.cumulative_pod against the floor
+          // for *actual* passes logged. Pre-sweep we show the single-pass target.
+          const passesDone = Math.max(0, zone.sweep_count || 0);
+          const passesForExpected = passesDone > 0 ? passesDone : 1;
+          const expected = podAfterPasses(est, passesForExpected);
+          const nextPass = podAfterPasses(est, passesForExpected + 1);
+          const expectedPct = Math.round(expected * 100);
+          const nextPct = Math.round(nextPass * 100);
+          // Compare against cumulative_pod — that's what the slider sets and
+          // what the server maintains Bayesian-combined across passes.
+          const recordedPct = Math.round((zone.cumulative_pod || 0) * 100);
+          const gap = recordedPct - expectedPct;
+          const label = passesDone > 0
+            ? `Expected after ${passesDone} pass${passesDone === 1 ? "" : "es"}`
+            : "Planning target (1 pass)";
+          // Hint + Apply button only make sense once a sweep has actually run.
+          // Before any pass the zone is "planned" — the gap between 0% recorded
+          // and the 63% one-pass floor is trivially true and not actionable.
+          const hint = passesDone > 0
+            ? (gap >= 20
+                ? `recorded ${recordedPct}% is ${gap} pp above the textbook floor — confirm sweep quality`
+                : gap <= -20
+                  ? `recorded ${recordedPct}% is ${Math.abs(gap)} pp below the textbook floor — another pass could reach ${nextPct}%`
+                  : null)
+            : null;
+          const canApply = passesDone > 0 && recordedPct !== expectedPct;
+          return (
+            <div className="flex items-start gap-1.5 px-2 py-1.5 rounded border text-[11px] bg-blue-500/5 border-blue-500/30 text-blue-200">
+              <Target size={12} className="mt-0.5 shrink-0" />
+              <div className="space-y-0.5 flex-1 min-w-0">
+                <div>
+                  {label}: <span className="font-semibold">{expectedPct}%</span>
+                  <span className="text-fg-4"> · +1 pass {nextPct}%</span>
+                </div>
+                <div className="text-[10px] text-fg-4 truncate" title={est.rationale}>{est.rationale}</div>
+                {hint && <div className="text-[10px] text-amber-300">{hint}</div>}
+                {canApply && (
+                  <button
+                    type="button"
+                    onClick={() => handleUpdate({ cumulative_pod: expected })}
+                    disabled={updating}
+                    className="text-[10px] text-accent hover:underline disabled:opacity-50"
+                  >
+                    Apply {expectedPct}% to recorded POD
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        }
+        // Unassigned path. Build list of teams whose platform + zone terrain
+        // yield a valid estimate. If that list is empty we fall through to a
+        // placeholder explaining what's missing.
+        const viableTeams = teams
+          .map((t) => ({ team: t, est: estimateZonePOD(zone, t) }))
+          .filter((x): x is { team: typeof x.team; est: NonNullable<typeof x.est> } => !!x.est);
+        if (viableTeams.length === 0) {
+          const why = teams.length === 0
+            ? "No teams configured for this operation yet."
+            : `No team in this operation has a sweep preset for ${zone.terrain_class || "this"} terrain.`;
+          return (
+            <div className="flex items-start gap-1.5 px-2 py-1.5 rounded border text-[11px] bg-surface-700/30 border-surface-600 text-fg-3">
+              <Target size={12} className="mt-0.5 shrink-0" />
+              <div>{why} Expected POD will appear once a compatible team is assigned.</div>
+            </div>
+          );
+        }
+        // Pick preview team: IC's explicit choice, else first viable. Fall
+        // back to first viable if the stale previewTeamId no longer matches
+        // any viable team (e.g. team list changed).
+        const chosen = viableTeams.find((x) => x.team.id === previewTeamId) || viableTeams[0];
+        const est = chosen.est;
+        const expected = podAfterPasses(est, 1);
+        const nextPass = podAfterPasses(est, 2);
         const expectedPct = Math.round(expected * 100);
         const nextPct = Math.round(nextPass * 100);
-        // Compare against cumulative_pod — that's what the slider sets and what
-        // the server maintains Bayesian-combined across passes. zone.pod is the
-        // per-pass value that triggered the last combine and isn't the right
-        // thing to measure cumulative progress against.
-        const recordedPct = Math.round((zone.cumulative_pod || 0) * 100);
-        const gap = recordedPct - expectedPct;
-        const label = passesDone > 0
-          ? `Expected after ${passesDone} pass${passesDone === 1 ? "" : "es"}`
-          : "Planning target (1 pass)";
-        const hint = gap >= 20
-          ? `recorded ${recordedPct}% is ${gap} pp above the textbook floor — confirm sweep quality`
-          : gap <= -20
-            ? `recorded ${recordedPct}% is ${Math.abs(gap)} pp below the textbook floor — another pass could reach ${nextPct}%`
-            : null;
         return (
           <div className="flex items-start gap-1.5 px-2 py-1.5 rounded border text-[11px] bg-blue-500/5 border-blue-500/30 text-blue-200">
             <Target size={12} className="mt-0.5 shrink-0" />
             <div className="space-y-0.5 flex-1 min-w-0">
               <div>
-                {label}: <span className="font-semibold">{expectedPct}%</span>
+                Planning preview (1 pass): <span className="font-semibold">{expectedPct}%</span>
                 <span className="text-fg-4"> · +1 pass {nextPct}%</span>
               </div>
               <div className="text-[10px] text-fg-4 truncate" title={est.rationale}>{est.rationale}</div>
-              {hint && <div className="text-[10px] text-amber-300">{hint}</div>}
-              {recordedPct !== expectedPct && (
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <label className="text-[10px] text-fg-4">Try on:</label>
+                <select
+                  value={chosen.team.id}
+                  onChange={(e) => setPreviewTeamId(e.target.value)}
+                  disabled={updating}
+                  className="text-[10px] bg-surface-700 border border-surface-600 rounded px-1 py-0.5 text-fg-1 max-w-[140px]"
+                >
+                  {viableTeams.map(({ team }) => (
+                    <option key={team.id} value={team.id}>
+                      {team.name} ({team.callsign})
+                    </option>
+                  ))}
+                </select>
                 <button
                   type="button"
-                  onClick={() => handleUpdate({ cumulative_pod: expected })}
+                  onClick={() => handleUpdate({ assigned_team_id: chosen.team.id })}
                   disabled={updating}
                   className="text-[10px] text-accent hover:underline disabled:opacity-50"
                 >
-                  Apply {expectedPct}% to recorded POD
+                  Assign {chosen.team.callsign}
                 </button>
-              )}
+              </div>
             </div>
           </div>
         );
