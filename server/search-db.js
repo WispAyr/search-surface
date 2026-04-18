@@ -141,8 +141,23 @@ for (const col of [
   // Timestamp of most recent deploy → used for fatigue alarm (4h rest
   // threshold). Cleared whenever status leaves 'deployed'/'returning'.
   'deployed_at TEXT',
+  // Smart-grid Tier A2: capability guard. platform_type is an enum encoded
+  // as TEXT so new platforms can be added without another migration. Legacy
+  // rows get NULL and are treated as "unknown — no guard" by the UI.
+  'platform_type TEXT',
 ]) {
   try { db.exec(`ALTER TABLE search_teams ADD COLUMN ${col}`); } catch { /* already present */ }
+}
+
+// Smart-grid Tier A1: per-cell terrain classification on zones. terrain_class
+// is the dominant class label (land|water|intertidal|mixed). terrain_composition
+// is the full JSON fractions object so the UI can surface the mix, not just the
+// winner. Pre-existing rows stay NULL and the UI treats them as unclassified.
+for (const col of [
+  'terrain_class TEXT',
+  'terrain_composition TEXT',
+]) {
+  try { db.exec(`ALTER TABLE search_zones ADD COLUMN ${col}`); } catch { /* already present */ }
 }
 
 // Persist the last SITREP recipient list per operation so controllers don't
@@ -283,28 +298,42 @@ const operations = {
 };
 
 // ── Zones ──
+function hydrateZone(z) {
+  if (!z) return z;
+  z.geometry = parseJSON(z.geometry);
+  // terrain_composition is stored as JSON text for flexibility; callers expect
+  // an object. null passes through untouched so the UI can distinguish
+  // "unclassified" from "fully land".
+  if (Object.prototype.hasOwnProperty.call(z, 'terrain_composition')) {
+    z.terrain_composition = parseJSON(z.terrain_composition);
+  }
+  return z;
+}
+
 const zones = {
   listByOperation(operationId) {
     return db.prepare('SELECT * FROM search_zones WHERE operation_id = ? ORDER BY priority ASC, name ASC')
       .all(operationId)
-      .map(z => ({ ...z, geometry: parseJSON(z.geometry) }));
+      .map(hydrateZone);
   },
 
   get(id) {
     const z = db.prepare('SELECT * FROM search_zones WHERE id = ?').get(id);
     if (!z) return null;
-    z.geometry = parseJSON(z.geometry);
-    return z;
+    return hydrateZone(z);
   },
 
-  create(operationId, { name, geometry, search_method, priority, spacing_m, poa, notes }) {
+  create(operationId, { name, geometry, search_method, priority, spacing_m, poa, notes, terrain_class, terrain_composition }) {
     const id = uuid();
     const ts = now();
     db.prepare(`
-      INSERT INTO search_zones (id, operation_id, name, geometry, search_method, priority, spacing_m, poa, notes, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO search_zones (id, operation_id, name, geometry, search_method, priority, spacing_m, poa, notes, terrain_class, terrain_composition, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, operationId, name, JSON.stringify(geometry), search_method || 'sector',
-      priority || 3, spacing_m || null, poa || 0, notes || null, ts, ts);
+      priority || 3, spacing_m || null, poa || 0, notes || null,
+      terrain_class || null,
+      terrain_composition ? (typeof terrain_composition === 'string' ? terrain_composition : JSON.stringify(terrain_composition)) : null,
+      ts, ts);
     audit.log(operationId, 'operator', 'zone_created', { zone_id: id, name, search_method });
     // Touch operation
     db.prepare('UPDATE search_operations SET updated_at = ? WHERE id = ?').run(ts, operationId);
@@ -314,15 +343,18 @@ const zones = {
   createBatch(operationId, zoneList) {
     const ts = now();
     const stmt = db.prepare(`
-      INSERT INTO search_zones (id, operation_id, name, geometry, search_method, priority, spacing_m, poa, notes, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO search_zones (id, operation_id, name, geometry, search_method, priority, spacing_m, poa, notes, terrain_class, terrain_composition, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const created = [];
     const tx = db.transaction(() => {
       for (const z of zoneList) {
         const id = uuid();
         stmt.run(id, operationId, z.name, JSON.stringify(z.geometry), z.search_method || 'sector',
-          z.priority || 3, z.spacing_m || null, z.poa || 0, z.notes || null, ts, ts);
+          z.priority || 3, z.spacing_m || null, z.poa || 0, z.notes || null,
+          z.terrain_class || null,
+          z.terrain_composition ? (typeof z.terrain_composition === 'string' ? z.terrain_composition : JSON.stringify(z.terrain_composition)) : null,
+          ts, ts);
         created.push(id);
       }
       db.prepare('UPDATE search_operations SET updated_at = ? WHERE id = ?').run(ts, operationId);
@@ -335,7 +367,7 @@ const zones = {
   update(id, fields) {
     const z = this.get(id);
     if (!z) return null;
-    const allowed = ['name', 'geometry', 'search_method', 'status', 'priority', 'assigned_team_id', 'pod', 'cumulative_pod', 'spacing_m', 'notes', 'poa', 'sweep_count'];
+    const allowed = ['name', 'geometry', 'search_method', 'status', 'priority', 'assigned_team_id', 'pod', 'cumulative_pod', 'spacing_m', 'notes', 'poa', 'sweep_count', 'terrain_class', 'terrain_composition'];
     const sets = [];
     const vals = [];
     for (const [k, v] of Object.entries(fields)) {
@@ -343,6 +375,9 @@ const zones = {
       if (k === 'geometry') {
         sets.push(`${k} = ?`);
         vals.push(JSON.stringify(v));
+      } else if (k === 'terrain_composition') {
+        sets.push(`${k} = ?`);
+        vals.push(v == null ? null : (typeof v === 'string' ? v : JSON.stringify(v)));
       } else {
         sets.push(`${k} = ?`);
         vals.push(v);
@@ -413,14 +448,14 @@ const teams = {
     return hydrateTeam(db.prepare('SELECT * FROM search_teams WHERE token = ?').get(token));
   },
 
-  create(operationId, { name, callsign, color, members, capability }) {
+  create(operationId, { name, callsign, color, members, capability, platform_type }) {
     const id = uuid();
     const token = generateToken();
     db.prepare(`
-      INSERT INTO search_teams (id, operation_id, name, callsign, token, color, members, capability, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO search_teams (id, operation_id, name, callsign, token, color, members, capability, platform_type, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, operationId, name, callsign || name, token, color || '#00d4ff',
-      members ? JSON.stringify(members) : '[]', capability || 'foot', now());
+      members ? JSON.stringify(members) : '[]', capability || 'foot', platform_type || null, now());
     audit.log(operationId, 'operator', 'team_created', { team_id: id, name, callsign: callsign || name });
     db.prepare('UPDATE search_operations SET updated_at = ? WHERE id = ?').run(now(), operationId);
     return this.get(id);
@@ -429,7 +464,7 @@ const teams = {
   update(id, fields) {
     const t = this.get(id);
     if (!t) return null;
-    const allowed = ['name', 'callsign', 'color', 'members', 'capability', 'status'];
+    const allowed = ['name', 'callsign', 'color', 'members', 'capability', 'status', 'platform_type'];
     const sets = [];
     const vals = [];
     for (const [k, v] of Object.entries(fields)) {

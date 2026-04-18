@@ -55,6 +55,19 @@ export interface SearchDatum {
   created_at: string;
 }
 
+// Smart-grid Tier A1: per-cell terrain classification. `null` means the cell
+// hasn't been classified (legacy zone or Overpass failed during generation).
+export type TerrainClass = 'land' | 'water' | 'intertidal' | 'mixed';
+
+export interface TerrainComposition {
+  land_pct: number;       // 0..1
+  water_pct: number;      // 0..1
+  intertidal_pct: number; // 0..1
+  dominant_class: TerrainClass;
+  // Optional provenance so the UI can hedge the badge ("partial OSM data").
+  partial?: boolean;
+}
+
 export interface SearchZone {
   id: string;
   operation_id: string;
@@ -73,6 +86,9 @@ export interface SearchZone {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  // Smart-grid Tier A1. Both nullable for legacy + partial data.
+  terrain_class?: TerrainClass | null;
+  terrain_composition?: TerrainComposition | null;
 }
 
 export interface SearchStreetItem {
@@ -80,6 +96,21 @@ export interface SearchStreetItem {
   cleared_at: string | null;
   cleared_by: string | null;
 }
+
+// Smart-grid Tier A2: platform type enum. Drives the capability matrix in
+// web/src/lib/capabilities.ts — legacy teams stay null and the guard treats
+// them as "unknown, no warning". Adding a new value here requires updating
+// the server mirror (server/lib/capabilities.js) AND the matrix.
+export type PlatformType =
+  | 'ground'
+  | 'ground_k9'
+  | 'mounted'
+  | 'boat_observer'
+  | 'boat_sonar'
+  | 'diver'
+  | 'drone_visual'
+  | 'drone_thermal'
+  | 'aerial';
 
 export interface SearchTeam {
   id: string;
@@ -90,6 +121,7 @@ export interface SearchTeam {
   color: string;
   members: string[];
   capability: string;
+  platform_type?: PlatformType | null;
   status: TeamStatus;
   last_lat: number | null;
   last_lon: number | null;

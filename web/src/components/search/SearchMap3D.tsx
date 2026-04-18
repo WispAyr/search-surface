@@ -7,6 +7,7 @@ import { useSearchStore } from "@/stores/search";
 import type { SearchOperation, SearchDatum } from "@/types/search";
 import type { MapPrefs } from "@/lib/api";
 import type { Feature, FeatureCollection, Point, Polygon } from "geojson";
+import { TERRAIN_FILL, compositionLabel } from "@/lib/terrainClassifier";
 
 // Status colours mirror the 2D map so the two views read consistently.
 const STATUS_COLORS: Record<string, string> = {
@@ -151,7 +152,14 @@ export function SearchMap3D({ operation, onDatumSet, onSecondaryDatumPick }: Sea
     for (const z of operation.zones || []) {
       const g = (z.geometry as any)?.geometry || z.geometry;
       if (!g || (g.type !== "Polygon" && g.type !== "MultiPolygon")) continue;
-      const color = STATUS_COLORS[z.status] || "#6b7280";
+      const statusColor = STATUS_COLORS[z.status] || "#6b7280";
+      // Terrain tint only applies to unassigned cells — once a team's on it,
+      // the team/status colour wins so the controller can see assignment.
+      const assignedColor = operation.teams?.find((t) => t.id === z.assigned_team_id)?.color;
+      const unassigned = z.status === "unassigned" && !assignedColor;
+      const terrainClass = z.terrain_class;
+      const color = assignedColor
+        || (unassigned && terrainClass ? TERRAIN_FILL[terrainClass] : statusColor);
       const heightM = PRIORITY_HEIGHT_M[z.priority] || 200;
       // Selection bump gives the chosen zone a visible lift above its siblings.
       const lift = z.id === selectedZoneId ? 200 : 0;
@@ -172,6 +180,8 @@ export function SearchMap3D({ operation, onDatumSet, onSecondaryDatumPick }: Sea
             podPct: Math.round((z.cumulative_pod || 0) * 100),
             method: (z.search_method || "").replace(/_/g, " "),
             selected: z.id === selectedZoneId ? 1 : 0,
+            terrainClass: terrainClass || null,
+            terrainLabel: compositionLabel(z.terrain_composition),
           },
         });
       }
@@ -477,6 +487,9 @@ export function SearchMap3D({ operation, onDatumSet, onSecondaryDatumPick }: Sea
         const p = f.properties as any;
         selectZoneRef.current(p.id);
         if (popupRef.current) popupRef.current.remove();
+        const terrainLine = p.terrainLabel
+          ? `<div style="color:#9ca3af;"><span style="color:#cbd5e1">terrain:</span> ${escapeHtml(p.terrainLabel)}</div>`
+          : "";
         popupRef.current = new maplibregl.Popup({ closeButton: false, offset: 12 })
           .setLngLat(e.lngLat)
           .setHTML(
@@ -484,6 +497,7 @@ export function SearchMap3D({ operation, onDatumSet, onSecondaryDatumPick }: Sea
               <div style="font-weight:600;color:#fff;margin-bottom:2px;">${escapeHtml(p.name ?? "")}</div>
               <div style="color:#9ca3af;">${escapeHtml(p.method ?? "")} · priority ${p.priority}</div>
               <div>POD: ${p.podPct}% · ${escapeHtml(p.status ?? "")}</div>
+              ${terrainLine}
             </div>`
           )
           .addTo(map);

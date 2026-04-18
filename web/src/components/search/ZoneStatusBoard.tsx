@@ -1,10 +1,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { search } from "@/lib/api";
+import { search, searchHelpers } from "@/lib/api";
+import bboxFn from "@turf/bbox";
 import { useSearchStore } from "@/stores/search";
-import type { SearchOperation, SearchZone } from "@/types/search";
-import { ChevronDown, ChevronUp, MapPin, Users, Check, Pause, Trash2, Download, Plane, Clock, ArrowUpDown, Filter } from "lucide-react";
+import type { SearchOperation, SearchZone, SearchTeam } from "@/types/search";
+import { matchScore, matchWarning, matchTier, PLATFORM_LABEL } from "@/lib/capabilities";
+import { processTerrain } from "@/lib/terrainClassifier";
+import { splitOnShoreline, isSplittable } from "@/lib/shorelineSplit";
+import { ChevronDown, ChevronUp, MapPin, Users, Check, Pause, Trash2, Download, Plane, Clock, ArrowUpDown, Filter, AlertTriangle, Scissors, Loader2 } from "lucide-react";
 
 const STATUS_BADGE: Record<string, { bg: string; label: string }> = {
   unassigned: { bg: "bg-surface-600 text-fg-4", label: "Unassigned" },
@@ -221,6 +225,8 @@ function ZoneDetail({
   onRefresh: () => void;
 }) {
   const [updating, setUpdating] = useState(false);
+  const [splitting, setSplitting] = useState(false);
+  const [splitError, setSplitError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Local POD state so the slider/input stays responsive while the server
   // round-trips. Reset on debounce-committed save.
@@ -245,6 +251,61 @@ function ZoneDetail({
     if (Math.round((zone.cumulative_pod || 0) * 100) === next) return;
     handleUpdate({ cumulative_pod: next / 100 });
   };
+
+  // ── Smart-grid Tier A3 — shoreline split ──
+  //
+  // Re-fetch terrain for a tight bbox around just this zone (cheaper than
+  // re-using the op-wide cache), re-run the classifier/split client-side,
+  // then POST two new zones + DELETE the parent. If either half fails to
+  // create we don't auto-rollback — let the operator see the state and
+  // decide. Over-engineering a transactional split here is not worth it
+  // for a 1-in-N action.
+  const handleSplit = async () => {
+    setSplitError(null);
+    setSplitting(true);
+    try {
+      const geom = zone.geometry as GeoJSON.Feature;
+      if (!geom?.geometry) throw new Error("Zone has no geometry");
+      const bb = bboxFn(geom);
+      const bbox: [number, number, number, number] = [bb[0], bb[1], bb[2], bb[3]];
+      const raw = await searchHelpers.osmTerrain(bbox);
+      const processed = processTerrain(raw);
+      const result = splitOnShoreline(zone, processed);
+      if (!result) {
+        setSplitError("Cannot split: zone has no usable geometry.");
+        return;
+      }
+      if (!result.children.length) {
+        setSplitError(result.reason || "No shoreline crosses this zone.");
+        return;
+      }
+      // Inherit search_method + priority from the parent; reset sweep_count
+      // on the children (server does that by default since it's not passed).
+      const opId = zone.operation_id;
+      for (const child of result.children) {
+        await search.createZone(opId, {
+          name: child.name,
+          geometry: child.geometry,
+          search_method: zone.search_method,
+          priority: zone.priority,
+          spacing_m: zone.spacing_m,
+          notes: zone.notes,
+          poa: child.poa,
+          cumulative_pod: child.cumulative_pod,
+          terrain_class: child.terrain_class,
+          terrain_composition: child.terrain_composition,
+        });
+      }
+      await search.deleteZone(zone.id);
+      onRefresh();
+    } catch (err: any) {
+      setSplitError(err?.message || "Split failed");
+    } finally {
+      setSplitting(false);
+    }
+  };
+
+  const splittable = isSplittable(zone);
 
   return (
     <div className="ml-4 mt-1 p-3 bg-surface-800/50 border border-surface-700 rounded text-xs space-y-3">
@@ -319,6 +380,32 @@ function ZoneDetail({
         <div className="text-fg-4">{zone.notes}</div>
       )}
 
+      {/* Smart-grid Tier A2. If the zone has terrain_composition AND the
+          currently-assigned team has a platform_type, show a match chip
+          (red/amber/hidden). On the team-picker itself we annotate each
+          option with the tier symbol so the IC can eyeball which teams
+          fit before selecting. */}
+      {(() => {
+        const comp = zone.terrain_composition;
+        const assigned = zone.assigned_team_id ? teams.find((t) => t.id === zone.assigned_team_id) : null;
+        if (!comp || !assigned || !assigned.platform_type) return null;
+        const warn = matchWarning(assigned.platform_type, comp);
+        if (!warn) return null;
+        const isBad = warn.tier === "bad";
+        return (
+          <div
+            className={`flex items-start gap-1.5 px-2 py-1.5 rounded border text-[11px] ${
+              isBad
+                ? "bg-red-500/10 border-red-500/40 text-red-300"
+                : "bg-amber-500/10 border-amber-500/40 text-amber-300"
+            }`}
+          >
+            <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+            <span>{warn.text}</span>
+          </div>
+        );
+      })()}
+
       {/* Quick actions */}
       <div className="flex gap-2 flex-wrap">
         {zone.status !== "complete" && (
@@ -343,9 +430,16 @@ function ZoneDetail({
                 disabled={updating}
               >
                 <option value="">Unassigned</option>
-                {teams.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name} ({t.callsign})</option>
-                ))}
+                {teams.map((t) => {
+                  // Annotate option label with match symbol so the IC can
+                  // see fit before committing. ✕ = bad (<0.4), ⚠ = weak
+                  // (<0.6), blank = ok or unknown.
+                  const tier = matchTier(matchScore(t.platform_type, zone.terrain_composition));
+                  const mark = tier === "bad" ? " ✕" : tier === "weak" ? " ⚠" : "";
+                  return (
+                    <option key={t.id} value={t.id}>{t.name} ({t.callsign}){mark}</option>
+                  );
+                })}
               </select>
             )}
 
@@ -411,6 +505,21 @@ function ZoneDetail({
           );
         })()}
 
+        {/* Smart-grid Tier A3. Offered only when the classifier labelled
+            the zone "mixed" (no class ≥ 70%). Replaces the parent with
+            two re-classified children. */}
+        {splittable && zone.status !== "complete" && (
+          <button
+            onClick={handleSplit}
+            disabled={updating || splitting}
+            className="px-2 py-1 bg-purple-600/10 text-purple-300 rounded hover:bg-purple-600/20 disabled:opacity-50 flex items-center gap-1 ml-auto"
+            title="Split this mixed zone into land + water halves on the shoreline."
+          >
+            {splitting ? <Loader2 size={12} className="animate-spin" /> : <Scissors size={12} />}
+            <span className="text-[11px]">Split</span>
+          </button>
+        )}
+
         {/* Delete zone */}
         <button
           onClick={async () => {
@@ -424,12 +533,16 @@ function ZoneDetail({
             }
           }}
           disabled={updating}
-          className="px-2 py-1 bg-red-600/10 text-red-400 rounded hover:bg-red-600/20 disabled:opacity-50 ml-auto"
+          className={`px-2 py-1 bg-red-600/10 text-red-400 rounded hover:bg-red-600/20 disabled:opacity-50 ${splittable && zone.status !== "complete" ? "" : "ml-auto"}`}
           title="Delete zone"
         >
           <Trash2 size={12} />
         </button>
       </div>
+
+      {splitError && (
+        <div className="text-[10px] text-red-400">{splitError}</div>
+      )}
     </div>
   );
 }

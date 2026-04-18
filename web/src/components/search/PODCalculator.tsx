@@ -10,21 +10,39 @@ import {
   estimateSearchTime,
   ESW_TABLE,
 } from "@/lib/podCalculator";
+import { SWEEP_PRESETS, SWEEP_GROUPS, getSweepPreset, type SweepSubject } from "@/lib/sar_tables/sweep_widths";
 import { X, Calculator } from "lucide-react";
 
 export function PODCalculator({ operation }: { operation: SearchOperation }) {
   const { togglePODCalculator } = useSearchStore();
   useEscapeKey(togglePODCalculator);
+  // Smart-grid Tier A4. "" = fall back to the terrain×subject table;
+  // any preset id overrides ESW directly with curated SAR numbers.
+  const [presetId, setPresetId] = useState<string>("");
   const [terrain, setTerrain] = useState("open_ground");
-  const [subjectType, setSubjectType] = useState("responsive");
+  const [subjectType, setSubjectType] = useState<SweepSubject>("responsive");
   const [targetPOD, setTargetPOD] = useState(0.7);
   const [areaWidth, setAreaWidth] = useState(500);
   const [teamSize, setTeamSize] = useState(4);
 
-  const esw = ESW_TABLE[terrain]?.[subjectType] || 20;
-  const spacing = suggestedSpacing(terrain, subjectType, targetPOD);
+  // Preset ESW wins over the terrain×subject table when one is picked.
+  const preset = useMemo(() => (presetId ? getSweepPreset(presetId) : undefined), [presetId]);
+  const esw = preset ? preset.esw[subjectType] : (ESW_TABLE[terrain]?.[subjectType] || 20);
+  // suggestedSpacing still uses the terrain table when no preset; with a
+  // preset we invert Koopman directly so the maths stays consistent.
+  const spacing = preset
+    ? Math.max(1, Math.round(-esw / Math.log(1 - Math.min(targetPOD, 0.99))))
+    : suggestedSpacing(terrain, subjectType, targetPOD);
   const pod = calculatePOD(esw, spacing, 1);
   const timeEst = estimateSearchTime(areaWidth * areaWidth, spacing, teamSize);
+
+  // Group presets for <optgroup>.
+  const groupedPresets = useMemo(() => {
+    const by: Record<string, typeof SWEEP_PRESETS> = {};
+    for (const g of SWEEP_GROUPS) by[g] = [];
+    for (const p of SWEEP_PRESETS) by[p.group].push(p);
+    return by;
+  }, []);
 
   return (
     <div className="fixed bottom-4 right-[440px] z-[1000] w-[340px] bg-surface-800 border border-surface-600 rounded-xl shadow-xl">
@@ -39,12 +57,40 @@ export function PODCalculator({ operation }: { operation: SearchOperation }) {
       </div>
 
       <div className="p-4 space-y-3">
+        {/* Smart-grid Tier A4. Curated sweep-width presets; when one is
+            selected it overrides the ESW value derived from the legacy
+            terrain×subject lookup, while still letting the subject-type
+            toggle pivot between responsive/unresponsive/object columns. */}
         <div>
-          <label className="block text-xs text-fg-4 mb-1">Terrain</label>
+          <label className="block text-xs text-fg-4 mb-1">Sweep preset</label>
+          <select
+            value={presetId}
+            onChange={(e) => setPresetId(e.target.value)}
+            className="w-full px-3 py-1.5 bg-surface-700 border border-surface-600 rounded text-sm"
+          >
+            <option value="">— Legacy terrain table —</option>
+            {SWEEP_GROUPS.map((g) => (
+              <optgroup key={g} label={g}>
+                {groupedPresets[g].map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          {preset?.note && (
+            <p className="mt-1 text-[10px] text-fg-4 leading-snug">{preset.note}</p>
+          )}
+        </div>
+
+        <div>
+          <label className="block text-xs text-fg-4 mb-1">
+            Terrain {preset && <span className="text-fg-4/70">(ignored — preset selected)</span>}
+          </label>
           <select
             value={terrain}
             onChange={(e) => setTerrain(e.target.value)}
-            className="w-full px-3 py-1.5 bg-surface-700 border border-surface-600 rounded text-sm"
+            disabled={!!preset}
+            className="w-full px-3 py-1.5 bg-surface-700 border border-surface-600 rounded text-sm disabled:opacity-50"
           >
             {Object.keys(ESW_TABLE).map((t) => (
               <option key={t} value={t}>{t.replace(/_/g, " ")}</option>
@@ -56,7 +102,7 @@ export function PODCalculator({ operation }: { operation: SearchOperation }) {
           <label className="block text-xs text-fg-4 mb-1">Subject type</label>
           <select
             value={subjectType}
-            onChange={(e) => setSubjectType(e.target.value)}
+            onChange={(e) => setSubjectType(e.target.value as SweepSubject)}
             className="w-full px-3 py-1.5 bg-surface-700 border border-surface-600 rounded text-sm"
           >
             <option value="responsive">Responsive (can call out)</option>

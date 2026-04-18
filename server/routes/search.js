@@ -1,6 +1,7 @@
 const express = require('express');
 const { operations, zones, teams, reports, comms, datums, audit, shareTokens, generateSitrep } = require('../search-db');
 const searchHelpers = require('../search-helpers');
+const { isValidPlatform } = require('../lib/capabilities');
 const { attachTenant, requireTenant } = require('../tenant-middleware');
 const multer = require('multer');
 const path = require('path');
@@ -347,8 +348,11 @@ router.delete('/datums/:datumId', requireSearchAdmin, (req, res) => {
 
 router.post('/operations/:id/teams', requireSearchAdmin, (req, res) => {
   if (!guardOperationId(req, res, req.params.id)) return;
-  const { name } = req.body;
+  const { name, platform_type } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
+  if (!isValidPlatform(platform_type)) {
+    return res.status(400).json({ error: `Unknown platform_type: ${platform_type}` });
+  }
   const team = teams.create(req.params.id, req.body);
   res.status(201).json(team);
 });
@@ -357,6 +361,9 @@ router.patch('/teams/:teamId', requireSearchAdmin, (req, res) => {
   const existing = teams.get(req.params.teamId);
   if (!existing) return res.status(404).json({ error: 'Team not found' });
   if (!guardOperationId(req, res, existing.operation_id)) return;
+  if (Object.prototype.hasOwnProperty.call(req.body, 'platform_type') && !isValidPlatform(req.body.platform_type)) {
+    return res.status(400).json({ error: `Unknown platform_type: ${req.body.platform_type}` });
+  }
   const team = teams.update(req.params.teamId, req.body);
   if (!team) return res.status(404).json({ error: 'Team not found' });
   broadcast(team.operation_id, { type: 'operation_updated', data: { id: team.operation_id } });

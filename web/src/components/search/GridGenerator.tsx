@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { search } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import bboxFn from "@turf/bbox";
+import { search, searchHelpers } from "@/lib/api";
 import { generateGrid } from "@/lib/gridGenerator";
+import { classifyCells, processTerrain, type ProcessedTerrain } from "@/lib/terrainClassifier";
 import { useSearchStore } from "@/stores/search";
 import { useEscapeKey } from "@/hooks/useEscapeKey";
 import type { SearchOperation, GridGenerationParams } from "@/types/search";
-import { X, Grid3X3, Hexagon, RotateCw, Route, Target, Dog, Plane } from "lucide-react";
+import { X, Grid3X3, Hexagon, RotateCw, Route, Target, Dog, Plane, Loader2 } from "lucide-react";
 
 interface GridGeneratorProps {
   operation: SearchOperation;
@@ -39,6 +41,10 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
   const [droneOverlap, setDroneOverlap] = useState(20);
   const [preview, setPreview] = useState<any[]>([]);
   const [creating, setCreating] = useState(false);
+  const [classifying, setClassifying] = useState(false);
+  // Cache processed terrain per rounded bbox so regenerating with tweaked
+  // params doesn't hit Overpass again. Ref so it survives re-renders.
+  const terrainCacheRef = useRef<Map<string, ProcessedTerrain>>(new Map());
 
   // Resolve datum: selected secondary datum takes precedence, else primary datum
   const selectedSecondary = gridDatumId
@@ -55,7 +61,7 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
       ? "Primary datum"
       : "No datum";
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (!datum && gridType !== "route_buffer") return;
 
     const params: GridGenerationParams = { type: gridType as any };
@@ -106,8 +112,67 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
     }
 
     const zones = generateGrid(params);
+    // Show zones immediately (uncoloured by terrain) so the operator isn't
+    // waiting on Overpass before they see anything. Classification folds in
+    // when it completes — a second setPreview pass.
     setPreview(zones);
     setPreviewZones(zones as any);
+
+    if (zones.length === 0) return;
+
+    // Only classify gridded/area patterns — a scent cone or route corridor
+    // already targets a known context and cell-level terrain labels are noise.
+    const eligible = gridType === "parallel" || gridType === "hex"
+      || gridType === "point" || gridType === "drone_lawnmower"
+      || gridType === "expanding_square";
+    if (!eligible) return;
+
+    try {
+      setClassifying(true);
+      // Compute the union bbox of all generated cells as a single FC — one
+      // Overpass fetch covers every cell in the preview.
+      const allFc: GeoJSON.FeatureCollection = {
+        type: "FeatureCollection",
+        features: zones.map((z) => z.geometry as GeoJSON.Feature),
+      };
+      const [w, s, e, n] = bboxFn(allFc as any);
+      // Guard: Overpass caps at 0.2 sq-deg. If the grid is enormous we skip
+      // classification rather than lying.
+      if (!Number.isFinite(s) || !Number.isFinite(w) || (n - s) * (e - w) > 0.19) {
+        setClassifying(false);
+        return;
+      }
+
+      // Round to 3 dp for cache keying — sub-grid tweaks share a cache entry.
+      const key = [s, w, n, e].map((v) => v.toFixed(3)).join(",");
+      let processed = terrainCacheRef.current.get(key);
+      if (!processed) {
+        const raw = await searchHelpers.osmTerrain([s, w, n, e]);
+        processed = processTerrain({
+          water: raw.water,
+          coastline: raw.coastline,
+          rivers: raw.rivers,
+          intertidal: raw.intertidal,
+          partial: raw.partial,
+        });
+        terrainCacheRef.current.set(key, processed);
+      }
+
+      const classed = classifyCells(zones.map((z) => z.geometry as GeoJSON.Feature), processed);
+      const merged = zones.map((z, i) => ({
+        ...z,
+        terrain_class: classed[i].dominant_class,
+        terrain_composition: classed[i],
+      }));
+      setPreview(merged);
+      setPreviewZones(merged as any);
+    } catch (err) {
+      // Classification failure is non-fatal — the user still gets the grid,
+      // just without terrain tints. Log for debugging; don't block.
+      console.warn("[smart-grid] terrain classification failed:", err);
+    } finally {
+      setClassifying(false);
+    }
   };
 
   const handleCreate = async () => {
@@ -131,7 +196,7 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
   // Re-preview when the anchor datum changes so the polygons on the map
   // follow the dropdown — avoids the "changed anchor, now blank" trap.
   useEffect(() => {
-    if (preview.length > 0 && datum) handleGenerate();
+    if (preview.length > 0 && datum) { handleGenerate().catch(() => {}); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gridDatumId]);
 
@@ -309,8 +374,21 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
 
         {/* Preview info */}
         {preview.length > 0 && (
-          <div className="p-2 bg-surface-700/50 rounded text-xs text-fg-3">
-            Generated <strong className="text-fg-1">{preview.length}</strong> zones
+          <div className="p-2 bg-surface-700/50 rounded text-xs text-fg-3 space-y-1">
+            <div>
+              Generated <strong className="text-fg-1">{preview.length}</strong> zones
+              {classifying && (
+                <span className="ml-2 inline-flex items-center gap-1 text-fg-4">
+                  <Loader2 size={10} className="animate-spin" />
+                  classifying terrain…
+                </span>
+              )}
+            </div>
+            {/* Break down by terrain class once classification has landed so the
+                operator can eyeball "40% of this grid is water" before creating. */}
+            {!classifying && preview.some((p: any) => p.terrain_class) && (
+              <TerrainBreakdown preview={preview} />
+            )}
           </div>
         )}
 
@@ -318,7 +396,7 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
         <div className="flex gap-2">
           <button
             onClick={handleGenerate}
-            disabled={!datum && gridType !== "route_buffer"}
+            disabled={(!datum && gridType !== "route_buffer") || classifying}
             className="flex-1 px-3 py-2 bg-surface-700 hover:bg-surface-600 text-sm rounded transition disabled:opacity-50"
           >
             Preview
@@ -332,6 +410,37 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Small breakdown chip: tallies the dominant_class of each previewed cell so
+// the operator can sanity-check "did I just put half this grid in the river?"
+// before hitting Create.
+function TerrainBreakdown({ preview }: { preview: any[] }) {
+  const counts: Record<string, number> = { land: 0, water: 0, intertidal: 0, mixed: 0 };
+  for (const p of preview) {
+    const k = p?.terrain_class;
+    if (k && counts[k] !== undefined) counts[k] += 1;
+  }
+  const items: Array<{ label: string; count: number; color: string }> = [
+    { label: "land", count: counts.land, color: "#6b7280" },
+    { label: "water", count: counts.water, color: "#3b82f6" },
+    { label: "intertidal", count: counts.intertidal, color: "#f59e0b" },
+    { label: "mixed", count: counts.mixed, color: "#a855f7" },
+  ].filter((x) => x.count > 0);
+  if (!items.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {items.map((it) => (
+        <span
+          key={it.label}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-surface-800/60 border border-surface-600"
+        >
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: it.color }} />
+          {it.count} {it.label}
+        </span>
+      ))}
     </div>
   );
 }
