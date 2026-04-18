@@ -319,13 +319,21 @@ function ZoneLayer({
     : strokeColor;
 
   const weight = isSelected ? 4 : PRIORITY_WEIGHTS[zone.priority] || 2;
+  // Opacity ramp so classified cells are visibly distinct from unclassified:
+  //   water/intertidal 0.30 → hazard reads at a glance
+  //   mixed            0.25 → "consider splitting"
+  //   land             0.22 → subtle but clearly tinted (vs 0.15 unclassified)
+  //   unclassified     0.15 → neutral
   const fillOpacity = zone.status === "complete"
     ? 0.1
     : isSelected
     ? 0.35
-    // Bump fill on water/intertidal a touch so the hazard reads at a glance.
-    : (unassigned && (terrainClass === "water" || terrainClass === "intertidal"))
+    : unassigned && (terrainClass === "water" || terrainClass === "intertidal")
     ? 0.3
+    : unassigned && terrainClass === "mixed"
+    ? 0.25
+    : unassigned && terrainClass === "land"
+    ? 0.22
     : 0.15;
 
   if (!zone.geometry) return null;
@@ -462,7 +470,9 @@ function PreviewZonesLayer() {
         const fillOpacity = terrainClass === "water" || terrainClass === "intertidal"
           ? 0.3
           : terrainClass === "mixed"
-          ? 0.2
+          ? 0.22
+          : terrainClass === "land"
+          ? 0.18
           : 0.12;
         const geom: GeoJSON.Geometry =
           (pz.geometry as GeoJSON.Feature).geometry || (pz.geometry as GeoJSON.Geometry);

@@ -234,7 +234,11 @@ export function classifyCells(
 // Hex values pulled from Tailwind's blue-500 / amber-400 / neutral grey for
 // coherence with status colours elsewhere in the app.
 export const TERRAIN_FILL: Record<TerrainClass, string> = {
-  land: "#6b7280",       // neutral — existing unassigned grey
+  // Muted sage/olive — distinct from the cool #6b7280 used for *unclassified*
+  // unassigned cells, so an operator can see at a glance whether terrain
+  // classification has run. Doesn't conflict with the bright #22c55e used for
+  // "complete" status.
+  land: "#a3b07e",
   water: "#3b82f6",      // blue-500
   intertidal: "#f59e0b", // amber-500
   mixed: "#a855f7",      // purple-500 — catches the eye for "consider splitting"
