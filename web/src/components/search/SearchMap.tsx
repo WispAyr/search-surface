@@ -9,6 +9,7 @@ import { AirspaceLayer } from "./AirspaceLayer";
 import { SarOverlays } from "./SarOverlays";
 import type { SearchOperation, SearchZone, SearchDatum } from "@/types/search";
 import { TERRAIN_FILL, compositionLabel } from "@/lib/terrainClassifier";
+import { BASEMAPS } from "./SearchMap3D";
 import "leaflet/dist/leaflet.css";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -96,7 +97,14 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
     addingDatum,
     setAddingDatum,
     gridDatumId,
+    mapPrefs,
   } = useSearchStore();
+
+  // Per-user basemap — MapLayerPanel writes this; we pick the matching tile
+  // source (fallback to carto-dark). Leaflet re-mounts the <TileLayer> when
+  // the `key` changes, so swapping is instant rather than leaking the old
+  // layer underneath.
+  const basemap = BASEMAPS.find((b) => b.id === mapPrefs.basemap) || BASEMAPS[0];
 
   // Anchor point for SAR overlays (rings, travel radii) — follows the Datums-tab
   // selection so the user can move the rings between primary + secondary datums.
@@ -136,8 +144,10 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
       attributionControl={false}
     >
       <TileLayer
-        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        key={basemap.id}
+        url={basemap.tiles[0]}
         maxZoom={19}
+        attribution={basemap.attribution}
       />
 
       {/* Primary datum marker */}
