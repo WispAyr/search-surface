@@ -132,6 +132,29 @@ export const admin = {
   activity: () => request<{ events: AdminActivity[] }>(`/admin/activity`),
 };
 
+// ── Per-user UI preferences ──
+export interface MapPrefs {
+  basemap?: "carto-dark" | "carto-light" | "osm" | "satellite" | "terrain";
+  show_3d?: boolean;
+  show_terrain?: boolean;
+  show_hillshade?: boolean;
+  extrude_zones?: boolean;
+  show_airspace?: boolean;
+  show_teams?: boolean;
+  show_datums?: boolean;
+  show_zone_labels?: boolean;
+  pitch?: number;
+  exaggeration?: number;
+}
+export const prefs = {
+  getMap: () => request<{ prefs: MapPrefs; updated_at: string | null }>(`/preferences/map`),
+  putMap: (prefs: MapPrefs) =>
+    request<{ prefs: MapPrefs; updated_at: string | null }>(`/preferences/map`, {
+      method: "PUT",
+      body: JSON.stringify({ prefs }),
+    }),
+};
+
 // ── Siphon (data collection) — proxied through backend ──
 export const siphon = {
   metar: (icao = "EGPK") => request<MetarData>(`/siphon/metar/${icao}`),

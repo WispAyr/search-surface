@@ -8,6 +8,21 @@ import type {
   Sitrep,
   OperationStatus,
 } from "@/types/search";
+import { prefs as prefsApi, type MapPrefs } from "@/lib/api";
+
+export const DEFAULT_MAP_PREFS: Required<MapPrefs> = {
+  basemap: "carto-dark",
+  show_3d: false,
+  show_terrain: true,
+  show_hillshade: true,
+  extrude_zones: true,
+  show_airspace: false,
+  show_teams: true,
+  show_datums: true,
+  show_zone_labels: true,
+  pitch: 55,
+  exaggeration: 1.3,
+};
 
 interface SearchState {
   // ── Operation list ──
@@ -70,6 +85,12 @@ interface SearchState {
   // the same coords re-trigger the effect.
   mapFlyTo: { lat: number; lon: number; zoom?: number; nonce: number } | null;
 
+  // Per-user map preferences. Hydrated from GET /api/preferences/map on shell
+  // mount, and PUT back (debounced) whenever a MapLayerPanel toggle fires.
+  mapPrefs: Required<MapPrefs>;
+  mapPrefsLoaded: boolean;
+  showMapLayerPanel: boolean;
+
   // ── Actions ──
   setOperations: (ops: SearchOperation[]) => void;
   setOperationsLoading: (v: boolean) => void;
@@ -116,6 +137,11 @@ interface SearchState {
   dismissAlarm: (id: string) => void;
   clearDismissedAlarms: () => void;
   setMapFlyTo: (lat: number, lon: number, zoom?: number) => void;
+  // Map prefs
+  loadMapPrefs: () => Promise<void>;
+  updateMapPrefs: (patch: Partial<MapPrefs>) => void;
+  toggleMapLayerPanel: () => void;
+  setShowMapLayerPanel: (v: boolean) => void;
 }
 
 export const useSearchStore = create<SearchState>((set) => ({
@@ -154,6 +180,9 @@ export const useSearchStore = create<SearchState>((set) => ({
   vehicleRouteMeta: null,
   dismissedAlarmIds: new Set<string>(),
   mapFlyTo: null,
+  mapPrefs: { ...DEFAULT_MAP_PREFS },
+  mapPrefsLoaded: false,
+  showMapLayerPanel: false,
 
   setOperations: (ops) => set({ operations: ops }),
   setOperationsLoading: (v) => set({ operationsLoading: v }),
@@ -250,4 +279,40 @@ export const useSearchStore = create<SearchState>((set) => ({
     set((s) => ({
       mapFlyTo: { lat, lon, zoom, nonce: (s.mapFlyTo?.nonce ?? 0) + 1 },
     })),
+
+  loadMapPrefs: async () => {
+    try {
+      const { prefs: loaded } = await prefsApi.getMap();
+      set({
+        mapPrefs: { ...DEFAULT_MAP_PREFS, ...(loaded || {}) },
+        mapPrefsLoaded: true,
+      });
+    } catch {
+      // Unauthenticated or offline — fall back to defaults and keep working
+      // locally. Next save attempt will surface the auth modal via the global
+      // onAuthFailure handler.
+      set({ mapPrefsLoaded: true });
+    }
+  },
+
+  updateMapPrefs: (patch) =>
+    set((s) => {
+      const next = { ...s.mapPrefs, ...patch };
+      scheduleMapPrefsSave(next);
+      return { mapPrefs: next };
+    }),
+
+  toggleMapLayerPanel: () => set((s) => ({ showMapLayerPanel: !s.showMapLayerPanel })),
+  setShowMapLayerPanel: (v) => set({ showMapLayerPanel: v }),
 }));
+
+// Debounced persistence — rapid toggles (e.g. dragging pitch slider) shouldn't
+// hammer the API. Last-write-wins per 400ms window.
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleMapPrefsSave(next: MapPrefs) {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    prefsApi.putMap(next).catch(() => { /* offline / auth — UI still works */ });
+  }, 400);
+}

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 4077",
+    "dev": "next dev --webpack -p 4077",
     "build": "next build --webpack",
     "start": "next start -p 4077"
   },
@@ -22,6 +22,7 @@
     "dom-to-image-more": "^3.7.2",
     "leaflet": "^1.9.4",
     "lucide-react": "latest",
+    "maplibre-gl": "^5.23.0",
     "next": "latest",
     "pdfjs-dist": "^4.9.155",
     "postcss": "latest",

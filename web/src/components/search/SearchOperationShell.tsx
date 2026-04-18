@@ -22,9 +22,13 @@ import { SubjectTimeline } from "./SubjectTimeline";
 import { AlarmBar } from "./AlarmBar";
 import { ConditionsStrip } from "./ConditionsStrip";
 import { ZelloPanel } from "../ZelloPanel";
-import { PanelRightOpen, Map as MapIcon } from "lucide-react";
+import { MapLayerPanel } from "./MapLayerPanel";
+import { PanelRightOpen, Map as MapIcon, Layers, Box } from "lucide-react";
 
 const SearchMap = dynamic(() => import("./SearchMap").then((m) => m.SearchMap), {
+  ssr: false,
+});
+const SearchMap3D = dynamic(() => import("./SearchMap3D").then((m) => m.SearchMap3D), {
   ssr: false,
 });
 
@@ -45,10 +49,22 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
     setRightPanel,
     mobilePanelOpen,
     setMobilePanelOpen,
+    mapPrefs,
+    mapPrefsLoaded,
+    showMapLayerPanel,
+    loadMapPrefs,
+    updateMapPrefs,
+    toggleMapLayerPanel,
   } = useSearchStore();
 
   useSearchStream(operationId);
   const { refresh } = useSearchOperation(operationId);
+
+  // Hydrate per-user map preferences on first mount. Cheap GET; the store
+  // handles auth failure + fallback silently.
+  useEffect(() => {
+    if (!mapPrefsLoaded) loadMapPrefs();
+  }, [mapPrefsLoaded, loadMapPrefs]);
 
   useEffect(() => {
     return () => {
@@ -91,27 +107,80 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
         {/* Map — isolate stacking context so Leaflet z-indexes don't bleed over UI */}
         <div className="flex-1 relative isolate min-h-0">
-          <SearchMap
-            operation={op}
-            onDatumSet={async (lat, lon) => {
-              try {
-                await import("@/lib/api").then(({ search }) =>
-                  search.updateOperation(op.id, { datum_lat: lat, datum_lon: lon })
-                );
-                refresh();
-              } catch {}
-            }}
-            onSecondaryDatumPick={(lat, lon) => {
-              useSearchStore.getState().setPendingDatumPoint([lat, lon]);
-              useSearchStore.getState().setRightPanel("datums");
-              useSearchStore.getState().setMobilePanelOpen(true);
-            }}
-          />
+          {mapPrefs.show_3d ? (
+            <SearchMap3D
+              operation={op}
+              onDatumSet={async (lat, lon) => {
+                try {
+                  await import("@/lib/api").then(({ search }) =>
+                    search.updateOperation(op.id, { datum_lat: lat, datum_lon: lon })
+                  );
+                  refresh();
+                } catch {}
+              }}
+              onSecondaryDatumPick={(lat, lon) => {
+                useSearchStore.getState().setPendingDatumPoint([lat, lon]);
+                useSearchStore.getState().setRightPanel("datums");
+                useSearchStore.getState().setMobilePanelOpen(true);
+              }}
+            />
+          ) : (
+            <SearchMap
+              operation={op}
+              onDatumSet={async (lat, lon) => {
+                try {
+                  await import("@/lib/api").then(({ search }) =>
+                    search.updateOperation(op.id, { datum_lat: lat, datum_lon: lon })
+                  );
+                  refresh();
+                } catch {}
+              }}
+              onSecondaryDatumPick={(lat, lon) => {
+                useSearchStore.getState().setPendingDatumPoint([lat, lon]);
+                useSearchStore.getState().setRightPanel("datums");
+                useSearchStore.getState().setMobilePanelOpen(true);
+              }}
+            />
+          )}
+
+          {/* Map controls — 3D toggle + layers panel opener. Top-right, above
+              both Leaflet and MapLibre's own z-index so they're always visible. */}
+          <div className="absolute top-3 right-3 z-[1040] flex items-center gap-1.5">
+            <button
+              onClick={() => updateMapPrefs({ show_3d: !mapPrefs.show_3d })}
+              className={`px-2.5 py-1.5 rounded-md text-[11px] font-semibold shadow-lg backdrop-blur border transition ${
+                mapPrefs.show_3d
+                  ? "bg-accent/90 text-black border-accent"
+                  : "bg-surface-800/90 text-fg-2 border-surface-600 hover:border-surface-500"
+              }`}
+              aria-label="Toggle 3D view"
+              title="Toggle 3D view"
+            >
+              <span className="flex items-center gap-1.5">
+                <Box size={13} />
+                3D
+              </span>
+            </button>
+            <button
+              onClick={toggleMapLayerPanel}
+              className={`p-2 rounded-md shadow-lg backdrop-blur border transition ${
+                showMapLayerPanel
+                  ? "bg-accent/90 text-black border-accent"
+                  : "bg-surface-800/90 text-fg-2 border-surface-600 hover:border-surface-500"
+              }`}
+              aria-label="Map preferences"
+              title="Map preferences"
+            >
+              <Layers size={15} />
+            </button>
+          </div>
+
+          {showMapLayerPanel && <MapLayerPanel />}
 
           {/* Mobile-only FAB to open the side panel as an overlay */}
           <button
             onClick={() => setMobilePanelOpen(true)}
-            className="md:hidden absolute top-3 right-3 z-[900] bg-surface-800/90 backdrop-blur border border-surface-600 text-fg-1 rounded-full p-2.5 shadow-lg"
+            className="md:hidden absolute top-14 right-3 z-[900] bg-surface-800/90 backdrop-blur border border-surface-600 text-fg-1 rounded-full p-2.5 shadow-lg"
             aria-label="Open operation panel"
           >
             <PanelRightOpen size={18} />

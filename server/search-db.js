@@ -173,6 +173,12 @@ db.exec(`
     PRIMARY KEY (tenant_id, operation_id)
   );
   CREATE INDEX IF NOT EXISTS idx_integ_routing_tenant ON integration_routing(tenant_id);
+
+  CREATE TABLE IF NOT EXISTS user_map_preferences (
+    user_id TEXT PRIMARY KEY,
+    prefs TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+  );
 `);
 
 function uuid() { return crypto.randomUUID(); }
@@ -763,4 +769,31 @@ const routing = {
   },
 };
 
-module.exports = { operations, zones, teams, reports, comms, datums, audit, shareTokens, generateSitrep, routing };
+// ════════════════════════════════════════════════
+// USER MAP PREFERENCES (per-user, all operations)
+// ════════════════════════════════════════════════
+// Stored as a single JSON blob per user so we can evolve the shape (basemap,
+// show_3d, enabled_layers, camera pitch, label density, etc) without schema
+// churn. The server enforces only a loose shape; unknown keys are preserved.
+
+const mapPrefs = {
+  get(userId) {
+    const row = db.prepare(`SELECT prefs, updated_at FROM user_map_preferences WHERE user_id = ?`).get(userId);
+    if (!row) return { prefs: {}, updated_at: null };
+    return { prefs: parseJSON(row.prefs) || {}, updated_at: row.updated_at };
+  },
+  set(userId, prefs) {
+    const clean = prefs && typeof prefs === 'object' ? prefs : {};
+    const json = JSON.stringify(clean);
+    db.prepare(
+      `INSERT INTO user_map_preferences (user_id, prefs, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         prefs = excluded.prefs,
+         updated_at = excluded.updated_at`
+    ).run(userId, json, now());
+    return this.get(userId);
+  },
+};
+
+module.exports = { operations, zones, teams, reports, comms, datums, audit, shareTokens, generateSitrep, routing, mapPrefs };

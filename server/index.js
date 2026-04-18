@@ -14,6 +14,7 @@ const authRoutes = require('./auth-routes');
 const adminRoutes = require('./admin-routes');
 const zelloRoutes = require('./routes/zello');
 const integrationsRoutes = require('./routes/integrations');
+const preferencesRoutes = require('./routes/preferences');
 const { router: internalRoutes } = require('./routes/internal');
 
 const app = express();
@@ -43,6 +44,9 @@ app.use('/api/zello', zelloRoutes);
 
 // ── Generic BYOK integrations (Telegram/Slack/Discord/Matrix/TAK/Broadnet) ──
 app.use('/api/integrations', integrationsRoutes);
+
+// ── Per-user UI preferences (map basemap, 3D toggle, layer picks) ──
+app.use('/api/preferences', preferencesRoutes);
 
 // ── Internal API for dispatch gateway (shared-secret, not tenant-scoped) ──
 // nginx MUST block /api/internal/* from public reach.
