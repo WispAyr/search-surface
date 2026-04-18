@@ -172,6 +172,12 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
       {/* Preview zones — dashed outlines, priority-tinted, auto-fit on appear */}
       <PreviewZonesLayer />
 
+      {/* Tier B1 — river corridor centrelines + chainage beads + collection
+          point diamonds. Reads both committed river_corridor zones and the
+          in-flight Grid Generator preview so operators see chainage BEFORE
+          committing. */}
+      <RiverCorridorOverlay operation={operation} />
+
       {/* Zone polygons */}
       {(operation.zones || []).map((zone) => (
         <ZoneLayer
@@ -557,6 +563,141 @@ function centroidOfGeometry(geom: GeoJSON.Geometry): [number, number] | null {
   } catch {
     return null;
   }
+}
+
+// Tier B1 — river corridor overlay.
+//
+// For every zone (committed or in-preview) with corridor_metadata of
+// kind='parent' we draw:
+//  - the centreline as a dashed blue LineString
+//  - small numbered "bead" markers at every 100m chainage (0, 100, 200…)
+//    with the km reading at km-multiples so operators can call out "body
+//    seen at km 2.4" without counting dots.
+//  - a red diamond at every collection point (weir/dam/bridge) inside the
+//    corridor, with its chainage in the tooltip.
+function RiverCorridorOverlay({ operation }: { operation: SearchOperation }) {
+  const previewZones = useSearchStore((s) => s.previewZones);
+
+  // Parent zones + their collection-point children, from both committed DB
+  // state and the preview list. Preview takes priority for visual feedback.
+  type ParentBundle = {
+    key: string;
+    centreline: Array<[number, number]>;
+    chainage: Array<{ lon: number; lat: number; d: number }>;
+    riverName: string | null;
+  };
+  type CPBundle = {
+    key: string;
+    lat: number;
+    lon: number;
+    name: string | null;
+    kind: string;
+    chainage_m: number;
+  };
+
+  const parents: ParentBundle[] = [];
+  const collectionPts: CPBundle[] = [];
+
+  const scan = (zones: any[], prefix: string) => {
+    zones.forEach((z, i) => {
+      const props = (z?.geometry as GeoJSON.Feature)?.properties || {};
+      const metaInline = (props as any).corridor_metadata;
+      const metaCol = (z as any).corridor_metadata;
+      const meta = metaInline || metaCol;
+      if (!meta) return;
+      if (meta.kind === "parent" && Array.isArray(meta.centreline)) {
+        parents.push({
+          key: `${prefix}-parent-${i}`,
+          centreline: meta.centreline,
+          chainage: meta.chainage || [],
+          riverName: meta.river_name || null,
+        });
+      } else if (meta.kind === "collection_point") {
+        // Pull the representative coord from the zone polygon centroid.
+        const geom: GeoJSON.Geometry =
+          (z.geometry as GeoJSON.Feature).geometry || (z.geometry as GeoJSON.Geometry);
+        const c = centroidOfGeometry(geom);
+        if (!c) return;
+        collectionPts.push({
+          key: `${prefix}-cp-${i}`,
+          lat: c[0],
+          lon: c[1],
+          name: meta.osm_name || null,
+          kind: meta.collection_kind || "collection",
+          chainage_m: typeof meta.chainage_m === "number" ? meta.chainage_m : 0,
+        });
+      }
+    });
+  };
+  scan((operation.zones || []) as any[], "db");
+  scan(previewZones as any[], "pv");
+
+  if (parents.length === 0 && collectionPts.length === 0) return null;
+
+  return (
+    <>
+      {parents.map((p) => (
+        <GeoJSON
+          key={p.key}
+          data={{
+            type: "Feature",
+            properties: {},
+            geometry: { type: "LineString", coordinates: p.centreline },
+          } as GeoJSON.Feature}
+          style={{
+            color: "#38bdf8",
+            weight: 2,
+            dashArray: "6,4",
+            opacity: 0.8,
+          }}
+        />
+      ))}
+      {parents.flatMap((p) =>
+        p.chainage.map((c) => {
+          const isKm = c.d > 0 && c.d % 1000 === 0;
+          const isZero = c.d === 0;
+          const size = isZero ? 10 : isKm ? 8 : 5;
+          const color = isZero ? "#ef4444" : isKm ? "#38bdf8" : "#38bdf8";
+          const label = isKm ? `${c.d / 1000} km` : isZero ? "LKP" : "";
+          return (
+            <Marker
+              key={`${p.key}-ch-${c.d}`}
+              position={[c.lat, c.lon]}
+              icon={L.divIcon({
+                html: `<div style="display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-50%)">
+                  <div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:1px solid rgba(0,0,0,0.4);box-shadow:0 0 3px rgba(0,0,0,0.4)"></div>
+                  ${label ? `<div style="margin-top:2px;padding:1px 4px;background:rgba(17,24,39,0.9);color:#fff;border-radius:2px;font-size:9px;font-family:system-ui;white-space:nowrap">${escapeHtml(label)}</div>` : ""}
+                </div>`,
+                className: "",
+                iconSize: [0, 0],
+                iconAnchor: [0, 0],
+              })}
+              interactive={false}
+            />
+          );
+        })
+      )}
+      {collectionPts.map((cp) => (
+        <Marker
+          key={cp.key}
+          position={[cp.lat, cp.lon]}
+          icon={L.divIcon({
+            html: `<div style="width:12px;height:12px;background:#ef4444;border:2px solid #fff;transform:rotate(45deg) translate(-50%,-50%);transform-origin:top left;box-shadow:0 0 4px rgba(239,68,68,0.7)"></div>`,
+            className: "",
+            iconSize: [0, 0],
+            iconAnchor: [0, 0],
+          })}
+        >
+          <Popup>
+            <strong style={{ color: "#ef4444", textTransform: "uppercase" }}>{cp.kind}</strong>
+            {cp.name && <> — {cp.name}</>}
+            <br />
+            <span className="text-xs">Chainage: {cp.chainage_m < 1000 ? `${Math.round(cp.chainage_m)} m` : `${(cp.chainage_m / 1000).toFixed(2)} km`}</span>
+          </Popup>
+        </Marker>
+      ))}
+    </>
+  );
 }
 
 function HazardsAutoLoader() {

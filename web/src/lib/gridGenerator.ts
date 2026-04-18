@@ -9,6 +9,12 @@ import lengthFn from "@turf/length";
 import lineSliceAlong from "@turf/line-slice-along";
 import { point, lineString, polygon, featureCollection } from "@turf/helpers";
 import type { GridGenerationParams } from "@/types/search";
+import {
+  buildRiverCorridor,
+  corridorToZones,
+  type RiverFeature,
+  type CollectionPointFeature,
+} from "@/lib/riverCorridor";
 
 export interface GeneratedZone {
   name: string;
@@ -38,9 +44,38 @@ export function generateGrid(params: GridGenerationParams): GeneratedZone[] {
       return generateK9ScentCone(params);
     case "drone_lawnmower":
       return generateDroneLawnmower(params);
+    case "river_corridor":
+      return generateRiverCorridor(params);
     default:
       return [];
   }
+}
+
+// Tier B1 — river corridor. The caller (GridGenerator.tsx) fetches OSM rivers
+// + collection points via searchHelpers.osmRivers() and passes them in on
+// `params.rivers` / `params.collectionPoints`, keeping this function pure
+// and synchronous so the rest of the grid pipeline's contract holds.
+function generateRiverCorridor(params: GridGenerationParams): GeneratedZone[] {
+  if (!params.datum) return [];
+  if (!(params.hours && params.hours > 0)) return [];
+  if (!(params.velocityMs && params.velocityMs > 0)) return [];
+  const rivers = (params.rivers || []) as RiverFeature[];
+  const collectionPoints = (params.collectionPoints || []) as CollectionPointFeature[];
+  const result = buildRiverCorridor({
+    lkp: params.datum,
+    hours: params.hours,
+    velocityMs: params.velocityMs,
+    floater: !!params.floater,
+    rivers,
+    collectionPoints,
+  });
+  if ("error" in result) return [];
+  return corridorToZones(result, {
+    lkp: params.datum,
+    hours: params.hours,
+    velocityMs: params.velocityMs,
+    floater: !!params.floater,
+  });
 }
 
 function generateParallelGrid(params: GridGenerationParams): GeneratedZone[] {

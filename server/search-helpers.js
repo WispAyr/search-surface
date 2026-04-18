@@ -366,6 +366,153 @@ router.post('/osm/terrain', async (req, res) => {
   });
 });
 
+// ── Smart-grid Tier B1 — River network + collection points ──
+//
+// Powers the "river corridor (drift)" grid type. Returns:
+//  - rivers: FeatureCollection of LineStrings (waterway=river|stream|canal|drain)
+//    with enough tag detail on each to derive drawn direction + classification.
+//  - collectionPoints: FeatureCollection of Points where floating bodies tend
+//    to hang up — weirs, dams, bridge crossings, sluices. These become
+//    priority-1 zones in the UI.
+//
+// Same mirror-race + long-TTL cache as /osm/terrain. Capped at 0.2 sq-deg
+// bbox — a river search corridor fits comfortably in that envelope (~25km
+// downstream from LKP at Ayrshire latitudes).
+router.post('/osm/rivers', async (req, res) => {
+  const { bbox } = req.body || {};
+  if (!bbox || bbox.length !== 4) return res.status(400).json({ error: 'bbox [s,w,n,e] required' });
+  const [s, w, n, e] = bbox.map(Number);
+  if (![s, w, n, e].every(Number.isFinite)) return res.status(400).json({ error: 'bbox must be numbers' });
+  if ((n - s) * (e - w) > 0.2) return res.status(400).json({ error: 'bbox too large (>0.2 sq deg)' });
+  const a = `(${s},${w},${n},${e})`;
+
+  // Linear waterways — drawn from upstream → downstream by OSM convention but
+  // not guaranteed. We preserve raw node order so the client can fall back to
+  // a DEM elevation check later if needed.
+  const waterwayQ = `[out:json][timeout:25];
+    (
+      way["waterway"~"^(river|stream|canal|drain)$"]${a};
+    );
+    out geom 400;`;
+
+  // Collection points — a grab-bag of features that snag floating bodies.
+  // Deliberately over-inclusive; the UI filters to those within the corridor.
+  const collectionQ = `[out:json][timeout:25];
+    (
+      node["waterway"="weir"]${a};
+      way["waterway"="weir"]${a};
+      node["waterway"="dam"]${a};
+      way["waterway"="dam"]${a};
+      node["waterway"="lock_gate"]${a};
+      way["waterway"="lock_gate"]${a};
+      node["waterway"="sluice_gate"]${a};
+      node["waterway"="waterfall"]${a};
+      way["man_made"="pier"]${a};
+      way["bridge"="yes"]["highway"]${a};
+      way["man_made"="bridge"]${a};
+    );
+    out geom 300;`;
+
+  const keyBase = [s, w, n, e].map((v) => v.toFixed(3)).join(',');
+  const settle = async (q, key) => {
+    try { return await cached(key, 30 * 60_000, () => overpass(q, 25_000)); }
+    catch (err) { return { _error: err.message, elements: [] }; }
+  };
+  const [ww, cp] = await Promise.all([
+    settle(waterwayQ, `riv:w:${keyBase}`),
+    settle(collectionQ, `riv:c:${keyBase}`),
+  ]);
+
+  const riversFC = { type: 'FeatureCollection', features: [] };
+  const collectionFC = { type: 'FeatureCollection', features: [] };
+
+  for (const el of ww.elements || []) {
+    const tags = el.tags || {};
+    if (el.type !== 'way' || !Array.isArray(el.geometry) || el.geometry.length < 2) continue;
+    const coords = el.geometry.map((p) => [p.lon, p.lat]);
+    riversFC.features.push({
+      type: 'Feature',
+      properties: {
+        osm_id: el.id,
+        waterway: tags.waterway || null,
+        name: tags.name || null,
+        // Default OSM widths when not tagged; client uses these for corridor
+        // minimum-width floor. Numbers in metres — conservative.
+        width_m: numericTag(tags.width) || null,
+      },
+      geometry: { type: 'LineString', coordinates: coords },
+    });
+  }
+
+  // Collection-point classifier — one label per feature so UI can pick an icon.
+  const toCenterPoint = (el) => {
+    if (el.type === 'node') {
+      if (typeof el.lat === 'number' && typeof el.lon === 'number') return [el.lon, el.lat];
+      return null;
+    }
+    // way → centroid of geometry array if present
+    if (Array.isArray(el.geometry) && el.geometry.length > 0) {
+      let sx = 0, sy = 0, n = 0;
+      for (const p of el.geometry) {
+        if (typeof p.lon === 'number' && typeof p.lat === 'number') { sx += p.lon; sy += p.lat; n++; }
+      }
+      if (n > 0) return [sx / n, sy / n];
+    }
+    return null;
+  };
+  const classify = (tags) => {
+    if (tags.waterway === 'weir') return 'weir';
+    if (tags.waterway === 'dam') return 'dam';
+    if (tags.waterway === 'lock_gate') return 'lock';
+    if (tags.waterway === 'sluice_gate') return 'sluice';
+    if (tags.waterway === 'waterfall') return 'waterfall';
+    if (tags.man_made === 'pier') return 'pier';
+    if (tags.man_made === 'bridge' || tags.bridge === 'yes') return 'bridge';
+    return 'other';
+  };
+  for (const el of cp.elements || []) {
+    const tags = el.tags || {};
+    const pt = toCenterPoint(el);
+    if (!pt) continue;
+    const kind = classify(tags);
+    if (kind === 'other') continue;
+    collectionFC.features.push({
+      type: 'Feature',
+      properties: {
+        osm_id: el.id,
+        kind,
+        name: tags.name || null,
+      },
+      geometry: { type: 'Point', coordinates: pt },
+    });
+  }
+
+  const errors = [ww._error, cp._error].filter(Boolean);
+  res.json({
+    bbox: [s, w, n, e],
+    rivers: riversFC,
+    collection_points: collectionFC,
+    counts: {
+      rivers: riversFC.features.length,
+      collection_points: collectionFC.features.length,
+    },
+    partial: errors.length > 0,
+    errors,
+  });
+});
+
+// Parse an OSM "width" tag — values vary wildly ("20", "20 m", "approximate").
+// Returns a positive number in metres or null.
+function numericTag(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return v > 0 ? v : null;
+  const s = String(v).trim();
+  const m = s.match(/^([\d.]+)/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 // ── Vehicle route through a polygon (OSRM trip) ──
 // body: { waypoints: [[lat,lon], ...] }   (must already be sampled — we keep backend dumb)
 router.post('/route/vehicle', async (req, res) => {

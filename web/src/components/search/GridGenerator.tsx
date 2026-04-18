@@ -8,7 +8,7 @@ import { classifyCells, processTerrain, type ProcessedTerrain } from "@/lib/terr
 import { useSearchStore } from "@/stores/search";
 import { useEscapeKey } from "@/hooks/useEscapeKey";
 import type { SearchOperation, GridGenerationParams } from "@/types/search";
-import { X, Grid3X3, Hexagon, RotateCw, Route, Target, Dog, Plane, Loader2 } from "lucide-react";
+import { X, Grid3X3, Hexagon, RotateCw, Route, Target, Dog, Plane, Waves, Loader2, AlertTriangle } from "lucide-react";
 
 interface GridGeneratorProps {
   operation: SearchOperation;
@@ -23,6 +23,19 @@ const GRID_TYPES = [
   { id: "point", label: "Point Search", icon: Target, desc: "Circle radius from a location" },
   { id: "k9_scent", label: "K9 Scent Cone", icon: Dog, desc: "Wind-based scent cone from datum" },
   { id: "drone_lawnmower", label: "Drone Pattern", icon: Plane, desc: "Lawnmower flight path for drone coverage" },
+  { id: "river_corridor", label: "River Corridor", icon: Waves, desc: "Downstream drift corridor from LKP" },
+] as const;
+
+// River velocity presets (m/s surface velocity). Field operator picks the
+// best fit from memory of the water, or clicks "Use gauge" (Tier B3) when
+// available. These are surface velocities — Carlson coefficient is applied
+// inside the corridor builder.
+const RIVER_VELOCITY_PRESETS = [
+  { id: "slow_meander", label: "Slow meander (0.2 m/s)", v: 0.2 },
+  { id: "pool", label: "Pool / backwater (0.4 m/s)", v: 0.4 },
+  { id: "normal", label: "Normal flow (0.8 m/s)", v: 0.8 },
+  { id: "fast", label: "Fast / rapids (1.5 m/s)", v: 1.5 },
+  { id: "spate", label: "Spate (3.0 m/s)", v: 3.0 },
 ] as const;
 
 export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
@@ -39,6 +52,13 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
   const [droneCount, setDroneCount] = useState(1);
   const [droneAltM, setDroneAltM] = useState(50);
   const [droneOverlap, setDroneOverlap] = useState(20);
+  // River corridor (Tier B1) state
+  const [riverHours, setRiverHours] = useState(3);
+  const [riverVelocity, setRiverVelocity] = useState(0.8);
+  const [riverFloater, setRiverFloater] = useState(false);
+  const [riverFetching, setRiverFetching] = useState(false);
+  const [riverWarnings, setRiverWarnings] = useState<string[]>([]);
+  const [riverError, setRiverError] = useState<string | null>(null);
   const [preview, setPreview] = useState<any[]>([]);
   const [creating, setCreating] = useState(false);
   const [classifying, setClassifying] = useState(false);
@@ -109,9 +129,57 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
         params.droneOverlap = droneOverlap;
         params.radiusM = radius;
         break;
+      case "river_corridor": {
+        // We need the OSM waterway network + collection points for a bbox
+        // around the LKP. Scale the fetch bbox by the maximum possible head
+        // distance (v × t × 3600 × floater-coefficient) plus a 25% safety
+        // margin so the downstream trace has room to breathe.
+        const maxCoeff = riverFloater ? 0.7 : 0.3;
+        const maxDistM = riverVelocity * riverHours * 3600 * maxCoeff * 1.25;
+        // Convert metres to degrees (rough — fine at UK latitudes).
+        const dLat = Math.max(0.01, maxDistM / 111000);
+        const dLon = Math.max(0.01, maxDistM / (111000 * Math.cos((datum![0] * Math.PI) / 180)));
+        // Overpass cap is 0.2 sq-deg; keep well under that.
+        const dLatC = Math.min(dLat, 0.2);
+        const dLonC = Math.min(dLon, 0.2);
+        const s = datum![0] - dLatC;
+        const n = datum![0] + dLatC;
+        const w = datum![1] - dLonC;
+        const e = datum![1] + dLonC;
+
+        try {
+          setRiverFetching(true);
+          setRiverError(null);
+          setRiverWarnings([]);
+          const res = await searchHelpers.osmRivers([s, w, n, e]);
+          params.datum = datum!;
+          params.hours = riverHours;
+          params.velocityMs = riverVelocity;
+          params.floater = riverFloater;
+          params.rivers = res.rivers.features as any;
+          params.collectionPoints = res.collection_points.features as any;
+        } catch (err: any) {
+          setRiverError(err?.message || "Failed to fetch OSM waterways");
+          setRiverFetching(false);
+          return;
+        } finally {
+          setRiverFetching(false);
+        }
+        break;
+      }
     }
 
     const zones = generateGrid(params);
+    // Surface corridor-generator warnings/errors. Zones[0] is the parent corridor
+    // polygon and carries the warnings on its corridor_metadata.
+    if (gridType === "river_corridor") {
+      if (zones.length === 0) {
+        setRiverError("No corridor generated — LKP may be too far from any OSM waterway, or no downstream network is available.");
+      } else {
+        const meta = (zones[0].geometry?.properties as any)?.corridor_metadata;
+        if (meta?.warnings) setRiverWarnings(meta.warnings);
+      }
+    }
     // Show zones immediately (uncoloured by terrain) so the operator isn't
     // waiting on Overpass before they see anything. Classification folds in
     // when it completes — a second setPreview pass.
@@ -326,6 +394,113 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
           </div>
         )}
 
+        {gridType === "river_corridor" && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-fg-4 mb-1">Time since entry (h)</label>
+                <input
+                  type="number"
+                  step="0.25"
+                  min={0}
+                  value={riverHours}
+                  onChange={(e) => setRiverHours(parseFloat(e.target.value) || 0)}
+                  className="w-full px-3 py-1.5 bg-surface-700 border border-surface-600 rounded text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-fg-4 mb-1">Surface velocity (m/s)</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min={0}
+                  value={riverVelocity}
+                  onChange={(e) => setRiverVelocity(parseFloat(e.target.value) || 0)}
+                  className="w-full px-3 py-1.5 bg-surface-700 border border-surface-600 rounded text-sm"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-fg-4 mb-1">Velocity preset</label>
+              <select
+                onChange={(e) => {
+                  const found = RIVER_VELOCITY_PRESETS.find((p) => p.id === e.target.value);
+                  if (found) setRiverVelocity(found.v);
+                }}
+                value={RIVER_VELOCITY_PRESETS.find((p) => p.v === riverVelocity)?.id ?? ""}
+                className="w-full px-3 py-1.5 bg-surface-700 border border-surface-600 rounded text-sm"
+              >
+                <option value="">Custom ({riverVelocity.toFixed(2)} m/s)</option>
+                {RIVER_VELOCITY_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-2 px-3 py-2 bg-surface-700/50 rounded">
+              <label className="flex items-center gap-2 text-xs text-fg-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={riverFloater}
+                  onChange={(e) => setRiverFloater(e.target.checked)}
+                  className="accent-accent"
+                />
+                Live floater (× 0.7 drift)
+              </label>
+              {!riverFloater && (
+                <span className="text-[10px] text-fg-4 ml-auto">body × 0.3 (Carlson)</span>
+              )}
+            </div>
+            <p className="text-[10px] text-fg-4">
+              Snaps LKP to the nearest OSM waterway and walks downstream. Corridor
+              head advances at v × t × drift-coefficient; width grows with √t up
+              to 100 m. Weirs/dams/bridges inside the corridor become priority-1
+              sub-zones.
+            </p>
+            {riverFetching && (
+              <div className="flex items-center gap-2 text-xs text-fg-3">
+                <Loader2 size={12} className="animate-spin" />
+                Fetching OSM waterways…
+              </div>
+            )}
+            {riverError && (
+              <div className="flex items-start gap-2 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-300">
+                <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                <span>{riverError}</span>
+              </div>
+            )}
+            {riverWarnings.length > 0 && (
+              <div className="space-y-1">
+                {riverWarnings.map((w, i) => (
+                  <div key={i} className="flex items-start gap-2 p-2 bg-amber-500/10 border border-amber-500/30 rounded text-[11px] text-amber-300">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                    <span>{w}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {preview.length > 0 && gridType === "river_corridor" && (() => {
+              const meta = (preview[0].geometry?.properties as any)?.corridor_metadata;
+              if (!meta || meta.kind !== "parent") return null;
+              const km = (meta.head_distance_m / 1000).toFixed(2);
+              const colMeta = preview.slice(1).length;
+              return (
+                <div className="px-3 py-2 bg-surface-700/50 rounded text-[11px] text-fg-3 space-y-0.5">
+                  <div>
+                    <span className="text-fg-1 font-medium">{meta.river_name || "Unnamed waterway"}</span>
+                    {" · "}{km} km downstream
+                  </div>
+                  <div>
+                    Body drift: {meta.body_velocity_ms} m/s · head width {meta.head_corridor_width_m} m
+                  </div>
+                  <div className="text-fg-4">
+                    {colMeta} collection point{colMeta === 1 ? "" : "s"} in corridor
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
         {gridType === "drone_lawnmower" && (
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
@@ -396,10 +571,10 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
         <div className="flex gap-2">
           <button
             onClick={handleGenerate}
-            disabled={(!datum && gridType !== "route_buffer") || classifying}
+            disabled={(!datum && gridType !== "route_buffer") || classifying || riverFetching}
             className="flex-1 px-3 py-2 bg-surface-700 hover:bg-surface-600 text-sm rounded transition disabled:opacity-50"
           >
-            Preview
+            {riverFetching ? "Fetching…" : "Preview"}
           </button>
           <button
             onClick={handleCreate}

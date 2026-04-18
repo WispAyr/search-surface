@@ -25,7 +25,7 @@ db.exec(`
     operation_id TEXT NOT NULL REFERENCES search_operations(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     geometry TEXT NOT NULL,
-    search_method TEXT DEFAULT 'sector' CHECK(search_method IN ('sector','parallel_grid','expanding_square','route_corridor','point_search')),
+    search_method TEXT DEFAULT 'sector' CHECK(search_method IN ('sector','parallel_grid','expanding_square','route_corridor','point_search','river_corridor','river_collection_point')),
     status TEXT DEFAULT 'unassigned' CHECK(status IN ('unassigned','assigned','in_progress','complete','suspended')),
     priority INTEGER DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
     assigned_team_id TEXT,
@@ -156,9 +156,90 @@ for (const col of [
 for (const col of [
   'terrain_class TEXT',
   'terrain_composition TEXT',
+  // Tier B1 — river corridor generator: per-zone JSON payload describing
+  // either the parent corridor (centreline, chainage, LKP, velocity, head
+  // distance, warnings) or a single collection point (weir/dam/bridge with
+  // its along-channel chainage). NULL for every non-river zone.
+  'corridor_metadata TEXT',
+  // Tier B2 — tide-gated intertidal windows: JSON {source, port, windows[]}
+  // where each window is [t_low - 2h, t_low + 2h]. NULL when the zone is not
+  // intertidal or when tide lookup failed.
+  'searchable_windows TEXT',
 ]) {
   try { db.exec(`ALTER TABLE search_zones ADD COLUMN ${col}`); } catch { /* already present */ }
 }
+
+// Tier B1 — the v1 search_zones CHECK constraint only allows
+// ('sector','parallel_grid','expanding_square','route_corridor','point_search').
+// To add 'river_corridor' + 'river_collection_point' without breaking existing
+// rows we rebuild the table into a new one and copy. Idempotent: we detect
+// the presence of the new value in the CHECK first and bail if it's already
+// there. SQLite doesn't let us ALTER a CHECK in place.
+(() => {
+  try {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='search_zones'").get();
+    const sql = row?.sql || '';
+    if (sql.includes("'river_corridor'")) return; // already migrated
+    if (!sql.includes('CHECK')) return; // no CHECK constraint (unusual) — nothing to do
+    db.exec('BEGIN');
+    // Build target table with the widened enum. Mirror every column + default
+    // from the live schema precisely; changing names here would orphan data.
+    db.exec(`
+      CREATE TABLE search_zones__new (
+        id TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL REFERENCES search_operations(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        geometry TEXT NOT NULL,
+        search_method TEXT DEFAULT 'sector' CHECK(search_method IN (
+          'sector','parallel_grid','expanding_square','route_corridor','point_search',
+          'river_corridor','river_collection_point'
+        )),
+        status TEXT DEFAULT 'unassigned' CHECK(status IN ('unassigned','assigned','in_progress','complete','suspended')),
+        priority INTEGER DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+        assigned_team_id TEXT,
+        pod REAL DEFAULT 0,
+        cumulative_pod REAL DEFAULT 0,
+        spacing_m REAL,
+        notes TEXT,
+        poa REAL DEFAULT 0,
+        sweep_count INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        terrain_class TEXT,
+        terrain_composition TEXT,
+        corridor_metadata TEXT,
+        searchable_windows TEXT
+      );
+    `);
+    // Copy every row. Column list is explicit so new/missing cols don't throw.
+    db.exec(`
+      INSERT INTO search_zones__new (
+        id, operation_id, name, geometry, search_method, status, priority,
+        assigned_team_id, pod, cumulative_pod, spacing_m, notes, poa,
+        sweep_count, created_at, updated_at, completed_at,
+        terrain_class, terrain_composition, corridor_metadata, searchable_windows
+      )
+      SELECT
+        id, operation_id, name, geometry, search_method, status, priority,
+        assigned_team_id, pod, cumulative_pod, spacing_m, notes, poa,
+        sweep_count, created_at, updated_at, completed_at,
+        terrain_class, terrain_composition,
+        NULL, NULL
+      FROM search_zones;
+    `);
+    db.exec('DROP TABLE search_zones;');
+    db.exec('ALTER TABLE search_zones__new RENAME TO search_zones;');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_sz_op ON search_zones(operation_id);');
+    db.exec('COMMIT');
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch {}
+    // If the rebuild fails we don't want to kill the whole process — log and
+    // soldier on. Tier B1 zones will be rejected by the CHECK but everything
+    // else keeps working.
+    console.warn('[search-db] Tier B1 search_method CHECK migration failed:', err?.message || err);
+  }
+})();
 
 // Persist the last SITREP recipient list per operation so controllers don't
 // retype on every broadcast.
@@ -307,7 +388,32 @@ function hydrateZone(z) {
   if (Object.prototype.hasOwnProperty.call(z, 'terrain_composition')) {
     z.terrain_composition = parseJSON(z.terrain_composition);
   }
+  // Tier B1 corridor metadata + Tier B2 tide windows are JSON blobs. Same
+  // treatment as terrain_composition — null → null, parse failure → null.
+  if (Object.prototype.hasOwnProperty.call(z, 'corridor_metadata')) {
+    z.corridor_metadata = parseJSON(z.corridor_metadata);
+  }
+  if (Object.prototype.hasOwnProperty.call(z, 'searchable_windows')) {
+    z.searchable_windows = parseJSON(z.searchable_windows);
+  }
   return z;
+}
+
+// The GridGenerator packs corridor metadata into geometry.properties.corridor_metadata
+// so the preview layer has everything inline. For persistence we lift it into a
+// dedicated column so it's queryable and reads don't have to walk geometry. This
+// helper pulls it out and returns the stripped geometry + the metadata.
+function extractCorridorMeta(geometry) {
+  if (!geometry || typeof geometry !== 'object') return { geometry, corridor_metadata: null };
+  const props = geometry.properties || {};
+  const meta = props.corridor_metadata || null;
+  if (!meta) return { geometry, corridor_metadata: null };
+  const newProps = { ...props };
+  delete newProps.corridor_metadata;
+  return {
+    geometry: { ...geometry, properties: newProps },
+    corridor_metadata: meta,
+  };
 }
 
 const zones = {
@@ -323,16 +429,22 @@ const zones = {
     return hydrateZone(z);
   },
 
-  create(operationId, { name, geometry, search_method, priority, spacing_m, poa, notes, terrain_class, terrain_composition }) {
+  create(operationId, { name, geometry, search_method, priority, spacing_m, poa, notes, terrain_class, terrain_composition, corridor_metadata, searchable_windows }) {
     const id = uuid();
     const ts = now();
+    // Lift corridor metadata off geometry.properties if the caller packed it
+    // there (GridGenerator preview flow does this). Explicit field wins.
+    const lifted = extractCorridorMeta(geometry);
+    const meta = corridor_metadata || lifted.corridor_metadata;
     db.prepare(`
-      INSERT INTO search_zones (id, operation_id, name, geometry, search_method, priority, spacing_m, poa, notes, terrain_class, terrain_composition, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, operationId, name, JSON.stringify(geometry), search_method || 'sector',
+      INSERT INTO search_zones (id, operation_id, name, geometry, search_method, priority, spacing_m, poa, notes, terrain_class, terrain_composition, corridor_metadata, searchable_windows, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, operationId, name, JSON.stringify(lifted.geometry), search_method || 'sector',
       priority || 3, spacing_m || null, poa || 0, notes || null,
       terrain_class || null,
       terrain_composition ? (typeof terrain_composition === 'string' ? terrain_composition : JSON.stringify(terrain_composition)) : null,
+      meta ? (typeof meta === 'string' ? meta : JSON.stringify(meta)) : null,
+      searchable_windows ? (typeof searchable_windows === 'string' ? searchable_windows : JSON.stringify(searchable_windows)) : null,
       ts, ts);
     audit.log(operationId, 'operator', 'zone_created', { zone_id: id, name, search_method });
     // Touch operation
@@ -343,17 +455,21 @@ const zones = {
   createBatch(operationId, zoneList) {
     const ts = now();
     const stmt = db.prepare(`
-      INSERT INTO search_zones (id, operation_id, name, geometry, search_method, priority, spacing_m, poa, notes, terrain_class, terrain_composition, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO search_zones (id, operation_id, name, geometry, search_method, priority, spacing_m, poa, notes, terrain_class, terrain_composition, corridor_metadata, searchable_windows, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const created = [];
     const tx = db.transaction(() => {
       for (const z of zoneList) {
         const id = uuid();
-        stmt.run(id, operationId, z.name, JSON.stringify(z.geometry), z.search_method || 'sector',
+        const lifted = extractCorridorMeta(z.geometry);
+        const meta = z.corridor_metadata || lifted.corridor_metadata;
+        stmt.run(id, operationId, z.name, JSON.stringify(lifted.geometry), z.search_method || 'sector',
           z.priority || 3, z.spacing_m || null, z.poa || 0, z.notes || null,
           z.terrain_class || null,
           z.terrain_composition ? (typeof z.terrain_composition === 'string' ? z.terrain_composition : JSON.stringify(z.terrain_composition)) : null,
+          meta ? (typeof meta === 'string' ? meta : JSON.stringify(meta)) : null,
+          z.searchable_windows ? (typeof z.searchable_windows === 'string' ? z.searchable_windows : JSON.stringify(z.searchable_windows)) : null,
           ts, ts);
         created.push(id);
       }
@@ -367,7 +483,7 @@ const zones = {
   update(id, fields) {
     const z = this.get(id);
     if (!z) return null;
-    const allowed = ['name', 'geometry', 'search_method', 'status', 'priority', 'assigned_team_id', 'pod', 'cumulative_pod', 'spacing_m', 'notes', 'poa', 'sweep_count', 'terrain_class', 'terrain_composition'];
+    const allowed = ['name', 'geometry', 'search_method', 'status', 'priority', 'assigned_team_id', 'pod', 'cumulative_pod', 'spacing_m', 'notes', 'poa', 'sweep_count', 'terrain_class', 'terrain_composition', 'corridor_metadata', 'searchable_windows'];
     const sets = [];
     const vals = [];
     for (const [k, v] of Object.entries(fields)) {
@@ -375,7 +491,7 @@ const zones = {
       if (k === 'geometry') {
         sets.push(`${k} = ?`);
         vals.push(JSON.stringify(v));
-      } else if (k === 'terrain_composition') {
+      } else if (k === 'terrain_composition' || k === 'corridor_metadata' || k === 'searchable_windows') {
         sets.push(`${k} = ?`);
         vals.push(v == null ? null : (typeof v === 'string' ? v : JSON.stringify(v)));
       } else {

@@ -2,7 +2,7 @@
 
 export type OperationType = 'missing_person' | 'security_sweep' | 'event_patrol' | 'welfare_check' | 'custom';
 export type OperationStatus = 'planning' | 'active' | 'suspended' | 'completed' | 'stood_down';
-export type SearchMethod = 'sector' | 'parallel_grid' | 'expanding_square' | 'route_corridor' | 'point_search';
+export type SearchMethod = 'sector' | 'parallel_grid' | 'expanding_square' | 'route_corridor' | 'point_search' | 'river_corridor' | 'river_collection_point';
 export type ZoneStatus = 'unassigned' | 'assigned' | 'in_progress' | 'complete' | 'suspended';
 export type TeamStatus = 'standby' | 'deployed' | 'returning' | 'stood_down';
 export type ReportType = 'clue' | 'area_clear' | 'hazard' | 'assist' | 'welfare' | 'photo' | 'checkin' | 'sitrep';
@@ -68,6 +68,51 @@ export interface TerrainComposition {
   partial?: boolean;
 }
 
+// Smart-grid Tier B1: corridor metadata packed onto a zone's geometry.properties
+// (and mirrored to a DB column for querying). `kind: 'parent'` is the main
+// corridor polygon; `kind: 'collection_point'` is a weir/dam/bridge sub-zone.
+export type CorridorMetadata =
+  | {
+      kind: 'parent';
+      lkp: [number, number];
+      hours: number;
+      velocity_ms: number;
+      floater: boolean;
+      body_velocity_ms: number;
+      head_distance_m: number;
+      head_corridor_width_m: number;
+      river_name: string | null;
+      centreline: Array<[number, number]>;
+      chainage: Array<{ lon: number; lat: number; d: number }>;
+      warnings: string[];
+    }
+  | {
+      kind: 'collection_point';
+      collection_kind: string;
+      chainage_m: number;
+      parent_lkp: [number, number];
+      osm_id: number;
+      osm_name: string | null;
+    };
+
+// Smart-grid Tier B2: per-zone tide windows. Non-null only for zones whose
+// geometry intersects the intertidal band. `source` is 'xtide' when the pu2
+// tide service returned real predictions, 'approximate' for the embedded
+// M2+S2 harmonic fallback.
+export interface TideWindow {
+  start: string; // ISO
+  end: string;   // ISO
+  centre: string;
+  centre_height_m: number;
+}
+export interface SearchableWindows {
+  source: 'xtide' | 'approximate' | 'unavailable';
+  port: { id: string; name: string; lat: number; lon: number } | null;
+  windows: TideWindow[];
+  generated_at: string;
+  ttl_hours: number;
+}
+
 export interface SearchZone {
   id: string;
   operation_id: string;
@@ -89,6 +134,10 @@ export interface SearchZone {
   // Smart-grid Tier A1. Both nullable for legacy + partial data.
   terrain_class?: TerrainClass | null;
   terrain_composition?: TerrainComposition | null;
+  // Smart-grid Tier B1 — only set on river_corridor / river_collection_point zones.
+  corridor_metadata?: CorridorMetadata | null;
+  // Smart-grid Tier B2 — tide-gated search windows for intertidal zones.
+  searchable_windows?: SearchableWindows | null;
 }
 
 export interface SearchStreetItem {
@@ -199,7 +248,7 @@ export interface Sitrep {
 
 // ── Grid generation params ──
 export interface GridGenerationParams {
-  type: 'parallel' | 'hex' | 'expanding_square' | 'route_buffer' | 'point' | 'k9_scent' | 'drone_lawnmower';
+  type: 'parallel' | 'hex' | 'expanding_square' | 'route_buffer' | 'point' | 'k9_scent' | 'drone_lawnmower' | 'river_corridor';
   bounds?: GeoJSON.Polygon;
   datum?: [number, number];
   cellSizeM?: number;
@@ -216,6 +265,13 @@ export interface GridGenerationParams {
   droneCount?: number;
   droneAltM?: number;
   droneOverlap?: number;
+  // River corridor (Tier B1) — LKP taken from params.datum; network + collection
+  // points fetched by the caller and passed in so generator stays sync + pure.
+  hours?: number;
+  velocityMs?: number;
+  floater?: boolean;
+  rivers?: GeoJSON.Feature<GeoJSON.LineString>[];
+  collectionPoints?: GeoJSON.Feature<GeoJSON.Point>[];
 }
 
 // ── Field team context ──

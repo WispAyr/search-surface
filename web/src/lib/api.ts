@@ -209,6 +209,47 @@ export const searchHelpers = {
       method: "POST",
       body: JSON.stringify({ bbox }),
     }),
+  osmRivers: (bbox: [number, number, number, number]) =>
+    request<{
+      bbox: [number, number, number, number];
+      rivers: GeoJSON.FeatureCollection<GeoJSON.LineString, { osm_id: number; waterway: string | null; name: string | null; width_m: number | null }>;
+      collection_points: GeoJSON.FeatureCollection<GeoJSON.Point, { osm_id: number; kind: string; name: string | null }>;
+      counts: { rivers: number; collection_points: number };
+      partial: boolean;
+      errors: string[];
+    }>("/search/osm/rivers", {
+      method: "POST",
+      body: JSON.stringify({ bbox }),
+    }),
+  // Tides, gauges — added in Tier B2/B3 below.
+  tides: (lat: number, lon: number, hours = 48) =>
+    request<{
+      source: "xtide" | "approximate" | "unavailable";
+      port: { id: string; name: string; lat: number; lon: number } | null;
+      predictions: Array<{ time: string; height_m: number; type: "H" | "L" }>;
+      windows: Array<{ start: string; end: string; centre: string; centre_height_m: number }>;
+      generated_at: string;
+      notes?: string;
+    }>(`/search/tides?lat=${lat}&lon=${lon}&hours=${hours}`),
+  gauges: (bbox: [number, number, number, number]) =>
+    request<{
+      gauges: Array<{
+        id: string;
+        label: string;
+        lat: number;
+        lon: number;
+        source: "EA" | "SEPA";
+        latest: { time: string; stage_m: number | null; flow_cumecs: number | null } | null;
+        series: Array<{ time: string; stage_m: number | null; flow_cumecs: number | null }>;
+        trend: "rising" | "falling" | "steady" | "unknown";
+        state: "normal" | "elevated" | "high" | "spate" | "unknown";
+        thresholds?: { percentile_95_m?: number | null; typical_max_m?: number | null };
+      }>;
+      bbox: [number, number, number, number];
+      generated_at: string;
+      partial: boolean;
+      errors: string[];
+    }>(`/search/gauges?bbox=${bbox.join(",")}`),
   vehicleRoute: (waypoints: Array<[number, number]>) =>
     request<{ geometry: GeoJSON.LineString; distance_m: number; duration_s: number }>("/search/route/vehicle", {
       method: "POST",
