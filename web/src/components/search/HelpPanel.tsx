@@ -18,6 +18,10 @@ import {
   Route,
   Dog,
   Plane,
+  Sparkles,
+  Waves,
+  LifeBuoy,
+  Truck,
 } from "lucide-react";
 
 interface Section {
@@ -197,6 +201,64 @@ const SECTIONS: Section[] = [
           Teams in the field don't need access to this page at all — share the team token URL and
           they get a minimal reporting UI.
         </p>
+      </div>
+    ),
+  },
+  {
+    id: "roadmap",
+    title: "Coming soon",
+    icon: <Sparkles size={16} />,
+    body: (
+      <div className="space-y-4">
+        <p className="p-2 rounded bg-warn/10 border border-warn/20 text-fg-2 text-xs">
+          These features are in active design — not yet live. Don't plan an incident around them.
+        </p>
+        <div className="flex gap-3 items-start">
+          <Waves size={18} className="shrink-0 mt-0.5 text-accent" />
+          <div>
+            <div className="font-semibold text-fg-1">Coastline sweep zones</div>
+            <p className="text-fg-3 text-sm">
+              Click two headlands; the app pulls the OSM coastline between them and drops a
+              corridor zone with ±100m offshore and ±50m inland buffers. Sweep timing uses walk
+              speed × length, and the current tide phase is overlaid so the IC can see whether
+              the window is flooding (cutoff risk) or ebbing (max strand exposure).
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-3 items-start">
+          <LifeBuoy size={18} className="shrink-0 mt-0.5 text-warn" />
+          <div>
+            <div className="font-semibold text-fg-1">Life-saving equipment</div>
+            <p className="text-fg-3 text-sm">
+              Public lifebuoys, rescue boards, throw lines (OSM <code>emergency=life_ring</code>
+              and <code>rescue_equipment=*</code>) overlaid on the map near the shoreline. Teams
+              can see what's already on site before committing kit.
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-3 items-start">
+          <Truck size={18} className="shrink-0 mt-0.5 text-accent" />
+          <div>
+            <div className="font-semibold text-fg-1">RVPs &amp; asset register</div>
+            <p className="text-fg-3 text-sm">
+              New datum kinds — <em>RVP</em> (rendezvous point), <em>ICP</em> (incident command
+              post), <em>holding area</em> — plus an Assets panel for tracking every resource
+              your team can call on (air, marine, ground, K9, drone, tech). Drag-drop to deploy.
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-3 items-start">
+          <Plane size={18} className="shrink-0 mt-0.5 text-accent" />
+          <div>
+            <div className="font-semibold text-fg-1">Live helicopter &amp; boat coverage</div>
+            <p className="text-fg-3 text-sm">
+              Tag a deployed asset with an ADS-B hex or AIS MMSI and the app ingests its live
+              track. Covered area is buffered by a speed/altitude-derived sweep width and
+              painted on the map as it happens — no drawing, no after-action reconstruction.
+              Automatically subtracted from the unsearched-area total.
+            </p>
+          </div>
+        </div>
       </div>
     ),
   },

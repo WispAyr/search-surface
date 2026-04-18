@@ -23,6 +23,10 @@ import {
   Layers,
   Antenna,
   Wifi,
+  LifeBuoy,
+  Plane,
+  Truck,
+  Sparkles,
 } from "lucide-react";
 
 // Public landing shown at `/` for anonymous visitors. Scrollable long-form
@@ -177,6 +181,41 @@ export function MarketingLanding() {
             title="Multi-tenant from day one"
             body="Every team's data is isolated. Three roles (owner, operator, viewer), full audit log, revocable shares and field-team tokens."
           />
+        </div>
+
+        {/* Roadmap */}
+        <div className="mt-20 md:mt-24">
+          <div className="text-center mb-10">
+            <div className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-[0.22em] text-accent">
+              <Sparkles size={12} /> On the roadmap
+            </div>
+            <h3 className="text-2xl md:text-3xl font-semibold tracking-tight mt-2">Shipping next.</h3>
+            <p className="text-fg-3 mt-3 max-w-2xl mx-auto text-sm">
+              Features in active design — pinned here so teams can plan around them.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <FeatureCard
+              icon={<Waves size={18} />}
+              title="Coastline sweep zones"
+              body="Click two headlands, pull OSM coastline between them, auto-generate a corridor zone with tide-aware timing. For beach and cliff-base searches where a polygon is the wrong shape."
+            />
+            <FeatureCard
+              icon={<LifeBuoy size={18} />}
+              title="Life-saving equipment"
+              body="Public lifebuoys, rescue boards and throw lines overlaid on shoreline maps. Teams know what's already on site before they commit kit."
+            />
+            <FeatureCard
+              icon={<Truck size={18} />}
+              title="RVP &amp; asset register"
+              body="Rendezvous points, ICP, staging areas as first-class datums. Track every asset your team can call on — deployed, available, or en-route."
+            />
+            <FeatureCard
+              icon={<Plane size={18} />}
+              title="Live helicopter &amp; boat coverage"
+              body="Plug in ADS-B or AIS for a deployed asset and its sweep area paints itself live — no drawing, no after-action reconstruction. Automatically excluded from unsearched area."
+            />
+          </div>
         </div>
       </section>
 
