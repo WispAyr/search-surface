@@ -13,6 +13,8 @@ const searchHelperRoutes = require('./search-helpers');
 const authRoutes = require('./auth-routes');
 const adminRoutes = require('./admin-routes');
 const zelloRoutes = require('./routes/zello');
+const integrationsRoutes = require('./routes/integrations');
+const { router: internalRoutes } = require('./routes/internal');
 
 const app = express();
 const PORT = process.env.API_PORT || 4078;
@@ -36,8 +38,15 @@ app.use('/api/auth', authRoutes);
 // ── Platform admin (cross-tenant) ──
 app.use('/api/admin', adminRoutes);
 
-// ── Zello BYOK (per-tenant integration) ──
+// ── Zello BYOK (per-tenant integration) — kept for its JWT-minting flow ──
 app.use('/api/zello', zelloRoutes);
+
+// ── Generic BYOK integrations (Telegram/Slack/Discord/Matrix/TAK/Broadnet) ──
+app.use('/api/integrations', integrationsRoutes);
+
+// ── Internal API for dispatch gateway (shared-secret, not tenant-scoped) ──
+// nginx MUST block /api/internal/* from public reach.
+app.use('/api/internal', internalRoutes);
 
 // ── TTL cache for upstream proxies (mirrors prism-surface) ──
 const proxyCache = new Map();

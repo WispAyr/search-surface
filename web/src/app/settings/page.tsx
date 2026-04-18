@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AuthGate } from "@/components/AuthGate";
+import { IntegrationsSettings } from "@/components/IntegrationsSettings";
 import { useAuth } from "@/hooks/useAuth";
 import { ArrowLeft, Users, Radio, Shield } from "lucide-react";
 
@@ -50,6 +51,8 @@ function SettingsInner() {
         </section>
 
         <ZelloSettings />
+
+        <IntegrationsSettings />
 
         {user?.role === "owner" && (
           <section className="bg-surface-800 border border-surface-700 rounded-lg p-5">

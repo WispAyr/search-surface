@@ -554,13 +554,46 @@ router.get('/operations/:id/comms', requireTenant, (req, res) => {
   res.json({ comms: list });
 });
 
-router.post('/operations/:id/comms', requireSearchAdmin, (req, res) => {
+router.post('/operations/:id/comms', requireSearchAdmin, async (req, res) => {
   if (!guardOperationId(req, res, req.params.id)) return;
-  const { from_callsign, to_callsign, message, type } = req.body;
+  const { from_callsign, to_callsign, message, type, fan_out_to } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
-  const entry = comms.add(req.params.id, { from_callsign, to_callsign, message, type });
+  const entry = comms.add(req.params.id, { from_callsign, to_callsign, message, type, source_channel: 'ops-console' });
   broadcast(req.params.id, { type: 'comms', data: entry });
   res.status(201).json(entry);
+
+  // Fire-and-forget cross-channel fan-out. The client may pass an explicit
+  // channel list; otherwise we fall back to the tenant/operation routing
+  // config so the operator doesn't have to re-pick channels each time.
+  let channels = Array.isArray(fan_out_to) ? fan_out_to : null;
+  if (!channels) {
+    try {
+      const { routing } = require('../search-db');
+      const cfg = routing.getEffective(req.tenant.id, req.params.id);
+      channels = cfg.enabled_channels || [];
+    } catch { channels = []; }
+  }
+  if (channels.length > 0) {
+    const gatewayUrl = process.env.DISPATCH_URL;
+    const sharedSecret = process.env.DISPATCH_SHARED_SECRET;
+    if (!gatewayUrl || !sharedSecret) return;
+    const axios = require('axios');
+    axios.post(`${gatewayUrl.replace(/\/+$/, '')}/send`, {
+      tenant_id: req.tenant.id,
+      operation_id: req.params.id,
+      channels,
+      message: { from: from_callsign || 'ops', body: message, meta: { operation_id: req.params.id } },
+    }, {
+      timeout: 15_000,
+      headers: { 'x-comms-app': 'search-surface', 'x-comms-secret': sharedSecret },
+      validateStatus: () => true,
+    }).then((result) => {
+      const results = result.data?.results || {};
+      broadcast(req.params.id, { type: 'comms_fanout', data: { comms_id: entry.id, results } });
+    }).catch((err) => {
+      console.warn('[search] comms fan-out failed:', err.message);
+    });
+  }
 });
 
 // ════════════════════════════════════════════════
@@ -993,3 +1026,4 @@ function getPolygonCentroid(feature) {
 }
 
 module.exports = router;
+module.exports.broadcast = broadcast;

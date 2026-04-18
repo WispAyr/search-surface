@@ -158,6 +158,23 @@ for (const col of [
 try { db.exec(`ALTER TABLE search_comms_log ADD COLUMN source_channel TEXT`); } catch { /* already present */ }
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_scl_source ON search_comms_log(source_channel)`); } catch { /* ok */ }
 
+// Per-tenant (and optionally per-operation) cross-channel routing table.
+// `enabled_channels` is a JSON array of integration names. `fan_out_all` is
+// the default: when true, any inbound on one channel fans out to every
+// other enabled channel. operation_id=NULL means "tenant default" and
+// applies whenever no per-operation override exists.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS integration_routing (
+    tenant_id TEXT NOT NULL,
+    operation_id TEXT,
+    enabled_channels TEXT NOT NULL DEFAULT '[]',
+    fan_out_all INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, operation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_integ_routing_tenant ON integration_routing(tenant_id);
+`);
+
 function uuid() { return crypto.randomUUID(); }
 function now() { return new Date().toISOString(); }
 function generateToken() { return crypto.randomBytes(24).toString('hex'); }
@@ -708,4 +725,42 @@ const shareTokens = {
   },
 };
 
-module.exports = { operations, zones, teams, reports, comms, datums, audit, shareTokens, generateSitrep };
+// Cross-channel routing config per tenant, with optional per-operation override.
+const routing = {
+  get(tenantId, operationId = null) {
+    const row = db.prepare(
+      `SELECT enabled_channels, fan_out_all, updated_at FROM integration_routing WHERE tenant_id = ? AND operation_id IS ?`
+    ).get(tenantId, operationId);
+    if (!row) return null;
+    return {
+      enabled_channels: parseJSON(row.enabled_channels) || [],
+      fan_out_all: row.fan_out_all === 1,
+      updated_at: row.updated_at,
+    };
+  },
+  getEffective(tenantId, operationId) {
+    // Operation-specific override wins; fall back to tenant default.
+    if (operationId) {
+      const op = this.get(tenantId, operationId);
+      if (op) return op;
+    }
+    return this.get(tenantId, null) || { enabled_channels: [], fan_out_all: true, updated_at: null };
+  },
+  set(tenantId, operationId, { enabled_channels, fan_out_all }) {
+    const channels = Array.isArray(enabled_channels) ? enabled_channels : [];
+    db.prepare(
+      `INSERT INTO integration_routing (tenant_id, operation_id, enabled_channels, fan_out_all, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(tenant_id, operation_id) DO UPDATE SET
+         enabled_channels = excluded.enabled_channels,
+         fan_out_all = excluded.fan_out_all,
+         updated_at = excluded.updated_at`
+    ).run(tenantId, operationId, JSON.stringify(channels), fan_out_all ? 1 : 0, now());
+    return this.get(tenantId, operationId);
+  },
+  remove(tenantId, operationId) {
+    db.prepare(`DELETE FROM integration_routing WHERE tenant_id = ? AND operation_id IS ?`).run(tenantId, operationId);
+  },
+};
+
+module.exports = { operations, zones, teams, reports, comms, datums, audit, shareTokens, generateSitrep, routing };

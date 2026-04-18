@@ -17,6 +17,12 @@ import {
   Zap,
   Lock,
   AlertTriangle,
+  Send,
+  Hash,
+  MessageCircle,
+  Layers,
+  Antenna,
+  Wifi,
 } from "lucide-react";
 
 // Public landing shown at `/` for anonymous visitors. Scrollable long-form
@@ -49,7 +55,7 @@ export function MarketingLanding() {
           <nav className="hidden md:flex items-center gap-7 text-sm text-fg-3">
             <a href="#features" className="hover:text-fg-1 transition">Features</a>
             <a href="#how" className="hover:text-fg-1 transition">How it works</a>
-            <a href="#zello" className="hover:text-fg-1 transition">Zello BYOK</a>
+            <a href="#integrations" className="hover:text-fg-1 transition">Integrations</a>
             <a href="#security" className="hover:text-fg-1 transition">Security</a>
           </nav>
           <div className="flex items-center gap-2">
@@ -125,7 +131,7 @@ export function MarketingLanding() {
         <div className="max-w-5xl mx-auto px-6 py-8 grid grid-cols-2 md:grid-cols-4 gap-6">
           <Stat value="< 3 min" label="to stand up an operation" />
           <Stat value="Live" label="field-to-command updates" />
-          <Stat value="BYOK" label="Zello · Telegram · SMS" />
+          <Stat value="BYOK · 7 channels" label="cross-channel comms, your keys" />
           <Stat value="0" label="audio hits our servers" />
         </div>
       </section>
@@ -231,6 +237,86 @@ export function MarketingLanding() {
           </div>
 
           <MockZelloPanel />
+        </div>
+      </section>
+
+      {/* ─── Integrations grid ─── */}
+      <section id="integrations" className="border-y border-white/5 bg-[rgba(15,20,36,0.35)]">
+        <div className="max-w-6xl mx-auto px-6 py-24 md:py-28">
+          <div className="text-center mb-12 md:mb-14">
+            <div className="text-[11px] uppercase tracking-[0.22em] text-accent mb-3">Comms · BYOK</div>
+            <h2 className="text-3xl md:text-4xl font-semibold tracking-tight">One message, every channel.</h2>
+            <p className="text-fg-3 mt-3 max-w-2xl mx-auto">
+              Plug in your own bot tokens, webhooks and server creds. A message typed in ops, or one received from the field, fans out across every channel you&apos;ve wired up — keys never leave your tenant.
+            </p>
+            <div className="mt-5 inline-flex items-center gap-2 text-[11px] text-fg-3 bg-white/[0.04] border border-white/10 rounded-full px-3 py-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#00e88f] shadow-[0_0_10px_rgba(0,232,143,0.7)]" />
+              Cross-channel routing · AES-256-GCM at rest
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            <IntegrationTile
+              icon={<Radio size={18} />}
+              name="Zello"
+              body="Direct-to-browser PTT. Audio never hits our servers."
+              color="#ffd54a"
+            />
+            <IntegrationTile
+              icon={<Send size={18} />}
+              name="Telegram"
+              body="Bot API · outbound alerts and inbound via webhook."
+              color="#2aabee"
+            />
+            <IntegrationTile
+              icon={<Hash size={18} />}
+              name="Slack"
+              body="Incoming webhook · fan-out into your ops channel."
+              color="#4a154b"
+            />
+            <IntegrationTile
+              icon={<MessageCircle size={18} />}
+              name="Discord"
+              body="Server webhook with username override."
+              color="#5865f2"
+            />
+            <IntegrationTile
+              icon={<Layers size={18} />}
+              name="Matrix"
+              body="Self-host or matrix.org. E2EE optional."
+              color="#00bfa5"
+              soon
+            />
+            <IntegrationTile
+              icon={<Antenna size={18} />}
+              name="TAK"
+              body="CoT over TLS · tactical interop with SARCOP/WinTAK."
+              color="#4ade80"
+              soon
+            />
+            <IntegrationTile
+              icon={<Wifi size={18} />}
+              name="Broadnet"
+              body="Resilience partners &amp; community radio bridge."
+              color="#f97316"
+              soon
+            />
+            <IntegrationTile
+              icon={<Radio size={18} />}
+              name="Bring your own"
+              body="Adapter SDK · drop in a custom bridge in ~60 lines."
+              color="#7df4ff"
+            />
+          </div>
+
+          <div className="text-center mt-10">
+            <Link
+              href="/signup"
+              className="inline-flex items-center gap-2 text-sm font-medium text-accent hover:text-[#7df4ff] transition"
+            >
+              Start wiring up your channels <ArrowRight size={14} />
+            </Link>
+          </div>
         </div>
       </section>
 
@@ -367,6 +453,46 @@ function Step({ n, icon, title, body }: { n: number; icon: React.ReactNode; titl
         </div>
         <h3 className="text-base font-medium mb-2">{title}</h3>
         <p className="text-sm text-fg-3 leading-relaxed">{body}</p>
+      </div>
+    </div>
+  );
+}
+
+function IntegrationTile({ icon, name, body, color, soon = false }: {
+  icon: React.ReactNode;
+  name: string;
+  body: string;
+  color: string;
+  soon?: boolean;
+}) {
+  return (
+    <div className="group relative rounded-xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0))] p-4 backdrop-blur-sm overflow-hidden transition hover:border-accent/30">
+      <div
+        className="absolute inset-x-0 -top-px h-px opacity-60"
+        style={{ background: `linear-gradient(90deg, transparent, ${color}66, transparent)` }}
+      />
+      <div className="flex items-start gap-3">
+        <div
+          className="inline-flex w-9 h-9 items-center justify-center rounded-lg border shrink-0"
+          style={{
+            background: `linear-gradient(135deg, ${color}26, ${color}08)`,
+            borderColor: `${color}40`,
+            color,
+          }}
+        >
+          {icon}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-sm font-medium text-fg-1">{name}</span>
+            {soon && (
+              <span className="text-[9px] uppercase tracking-wider text-fg-4 border border-white/10 rounded px-1.5 py-0.5">
+                soon
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-fg-3 leading-relaxed">{body}</p>
+        </div>
       </div>
     </div>
   );
