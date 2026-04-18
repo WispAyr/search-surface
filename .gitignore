@@ -7,5 +7,7 @@ dist/
 uploads/
 .env
 .env.local
+server/data/.auth-secret
+server/data/.bootstrap-owner.txt
 .DS_Store
 tsconfig.tsbuildinfo

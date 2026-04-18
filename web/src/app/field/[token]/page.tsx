@@ -8,9 +8,10 @@
 
 import { useEffect, useState, useRef, use } from "react";
 import dynamic from "next/dynamic";
-import { search } from "@/lib/api";
 import type { SearchStreetItem, SearchTeam } from "@/types/search";
 import { Check, Truck, MapPin, AlertTriangle, RefreshCw, Navigation } from "lucide-react";
+import { enqueue, drain } from "@/lib/offline-queue";
+import { OfflineBar } from "./OfflineBar";
 
 // Leaflet must load client-side only.
 const RouteMap = dynamic(() => import("./RouteMap").then((m) => m.RouteMap), {
@@ -54,6 +55,21 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
     return () => { mountedRef.current = false; };
   }, []);
 
+  // Register the /field/-scoped service worker once — unconditional so it still
+  // installs on the error / loading branches (that's exactly when offline
+  // caching matters most).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker
+      .register("/sw.js", { scope: "/field/" })
+      .catch((e) => console.warn("[field] SW register failed:", e));
+  }, []);
+
+  // Cache key for last-known context — lets the page render useful content on
+  // cold-load when offline (after at least one successful online load).
+  const ctxKey = `search-field-ctx:${token}`;
+
   async function load() {
     try {
       const r = await fetch(`/api/search/field/context?token=${encodeURIComponent(token)}`);
@@ -62,8 +78,21 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
       if (!mountedRef.current) return;
       setCtx(data);
       setError(null);
+      try { localStorage.setItem(ctxKey, JSON.stringify(data)); } catch {}
+      // Opportunistic drain — any queued mutations ride out on successful fetch.
+      drain().catch(() => {});
     } catch (e) {
       if (!mountedRef.current) return;
+      // Offline (or first-render) fallback: try cached snapshot.
+      try {
+        const raw = localStorage.getItem(ctxKey);
+        if (raw) {
+          const cached = JSON.parse(raw) as FieldContext;
+          if (!ctx) setCtx(cached);
+          setError(null);
+          return;
+        }
+      } catch {}
       setError(e instanceof Error ? e.message : String(e));
     }
   }
@@ -77,24 +106,34 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
   async function toggleStreet(streetName: string, nextCleared: boolean) {
     if (!ctx) return;
     setPending((p) => new Set(p).add(streetName));
-    // Optimistic update
-    setCtx((c) => c ? {
-      ...c,
-      street_checklist: c.street_checklist.map((s) =>
-        s.name === streetName
-          ? { ...s, cleared_at: nextCleared ? new Date().toISOString() : null, cleared_by: nextCleared ? (c.team.callsign || c.team.name) : null }
-          : s
-      ),
-    } : c);
-    try {
-      await search.markStreetCleared(ctx.team.id, streetName, nextCleared, token);
-    } catch (e) {
-      // Revert on failure
-      await load();
-      alert(`Update failed: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setPending((p) => { const n = new Set(p); n.delete(streetName); return n; });
-    }
+    const nowIso = new Date().toISOString();
+    // Optimistic update — persisted in the cached context so a reload mid-offline
+    // still shows the driver's ticks.
+    setCtx((c) => {
+      if (!c) return c;
+      const next = {
+        ...c,
+        street_checklist: c.street_checklist.map((s) =>
+          s.name === streetName
+            ? { ...s, cleared_at: nextCleared ? nowIso : null, cleared_by: nextCleared ? (c.team.callsign || c.team.name) : null }
+            : s
+        ),
+      };
+      try { localStorage.setItem(ctxKey, JSON.stringify(next)); } catch {}
+      return next;
+    });
+    // All writes route through the offline outbox; it sends immediately when
+    // online and queues when not. Coalesced on (team, street) so rapid toggles
+    // don't stack up.
+    await enqueue({
+      kind: "street",
+      url: `/api/search/teams/${ctx.team.id}/streets/${encodeURIComponent(streetName)}?token=${encodeURIComponent(token)}`,
+      method: "PATCH",
+      body: { cleared: nextCleared },
+      client_ts: nowIso,
+      dedup: `street:${ctx.team.id}:${streetName}`,
+    });
+    setPending((p) => { const n = new Set(p); n.delete(streetName); return n; });
   }
 
   // Shared checkin implementation. `silent` mode suppresses alerts and the
@@ -108,16 +147,16 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
     }
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
-        try {
-          await fetch(`/api/search/field/checkin?token=${encodeURIComponent(token)}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
-          });
-          if (!silent) await load();
-        } catch (e) {
-          if (!silent) alert(`Check-in failed: ${e instanceof Error ? e.message : String(e)}`);
-        }
+        await enqueue({
+          kind: "checkin",
+          url: `/api/search/field/checkin?token=${encodeURIComponent(token)}`,
+          method: "POST",
+          body: { lat: pos.coords.latitude, lon: pos.coords.longitude },
+          client_ts: new Date().toISOString(),
+          // One pending check-in is enough — coalesce auto-pings into the latest fix.
+          dedup: `checkin:${token}`,
+        });
+        if (!silent) await load();
       },
       (err) => { if (!silent) alert(`Location error: ${err.message}`); },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: silent ? 60000 : 0 },
@@ -192,6 +231,7 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
             </button>
           </div>
         </div>
+        <OfflineBar />
         {/* Progress strip */}
         {total > 0 && (
           <div className="px-4 pb-3">

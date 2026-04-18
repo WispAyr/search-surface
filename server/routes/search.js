@@ -399,6 +399,7 @@ router.patch('/teams/:teamId/streets/:streetName', (req, res) => {
         type: 'area_clear',
         description: `Cleared: ${streetName}`,
         severity: 'info',
+        created_at: req.body?.client_ts,
       });
     }
   }
@@ -474,7 +475,7 @@ router.get('/field/context', fieldAuth, (req, res) => {
 
 router.post('/field/report', fieldAuth, (req, res) => {
   const team = req.searchTeam;
-  const { type, lat, lon, grid_ref, description, severity, zone_id } = req.body;
+  const { type, lat, lon, grid_ref, description, severity, zone_id, client_ts } = req.body;
   if (!type) return res.status(400).json({ error: 'type required' });
 
   const report = reports.create(team.operation_id, {
@@ -486,6 +487,7 @@ router.post('/field/report', fieldAuth, (req, res) => {
     grid_ref,
     description,
     severity,
+    created_at: client_ts,
   });
   broadcast(team.operation_id, { type: 'report_submitted', data: { ...report, team_name: team.name, team_callsign: team.callsign } });
   res.status(201).json(report);
@@ -493,16 +495,16 @@ router.post('/field/report', fieldAuth, (req, res) => {
 
 router.post('/field/checkin', fieldAuth, (req, res) => {
   const team = req.searchTeam;
-  const { lat, lon } = req.body;
+  const { lat, lon, client_ts } = req.body;
   if (lat == null || lon == null) return res.status(400).json({ error: 'lat and lon required' });
 
   teams.updatePosition(team.id, lat, lon);
   broadcast(team.operation_id, {
     type: 'team_position',
-    data: { team_id: team.id, lat, lon, at: new Date().toISOString(), name: team.name, callsign: team.callsign, color: team.color },
+    data: { team_id: team.id, lat, lon, at: client_ts || new Date().toISOString(), name: team.name, callsign: team.callsign, color: team.color },
   });
 
-  // Also create a checkin report
+  // Also create a checkin report — honors client_ts when drained from offline queue.
   reports.create(team.operation_id, {
     team_id: team.id,
     type: 'checkin',
@@ -510,6 +512,7 @@ router.post('/field/checkin', fieldAuth, (req, res) => {
     lon,
     description: `Check-in from ${team.callsign}`,
     severity: 'info',
+    created_at: client_ts,
   });
 
   res.json({ ok: true });

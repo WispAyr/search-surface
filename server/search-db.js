@@ -489,15 +489,28 @@ const reports = {
     `).all(operationId, limit);
   },
 
-  create(operationId, { zone_id, team_id, type, lat, lon, grid_ref, description, photo_url, severity }) {
+  // created_at can be overridden by the caller when a report is being drained
+  // from the field offline queue — we keep the real time-of-action in the audit
+  // trail instead of the server-drain time. Clamp to a sane window to reject
+  // obvious clock skew / spoofed backdates.
+  create(operationId, { zone_id, team_id, type, lat, lon, grid_ref, description, photo_url, severity, created_at }) {
     const id = uuid();
+    const nowTs = now();
+    let ts = nowTs;
+    if (created_at) {
+      const t = new Date(created_at).getTime();
+      // Accept up to 7 days backwards (offline stint) and 60s forward (clock drift).
+      if (!Number.isNaN(t) && t >= Date.now() - 7 * 86400_000 && t <= Date.now() + 60_000) {
+        ts = new Date(t).toISOString();
+      }
+    }
     db.prepare(`
       INSERT INTO search_reports (id, operation_id, zone_id, team_id, type, lat, lon, grid_ref, description, photo_url, severity, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, operationId, zone_id || null, team_id || null, type, lat || null, lon || null,
-      grid_ref || null, description || null, photo_url || null, severity || 'info', now());
-    audit.log(operationId, team_id || 'operator', 'report_submitted', { report_id: id, type, severity });
-    db.prepare('UPDATE search_operations SET updated_at = ? WHERE id = ?').run(now(), operationId);
+      grid_ref || null, description || null, photo_url || null, severity || 'info', ts);
+    audit.log(operationId, team_id || 'operator', 'report_submitted', { report_id: id, type, severity, queued: ts !== nowTs });
+    db.prepare('UPDATE search_operations SET updated_at = ? WHERE id = ?').run(nowTs, operationId);
     return db.prepare('SELECT * FROM search_reports WHERE id = ?').get(id);
   },
 

@@ -18,6 +18,9 @@ import { SitrepPanel } from "./SitrepPanel";
 import { SearchConditions } from "./SearchConditions";
 import { DatumsPanel } from "./DatumsPanel";
 import { SarToolsPanel } from "./SarToolsPanel";
+import { SubjectTimeline } from "./SubjectTimeline";
+import { AlarmBar } from "./AlarmBar";
+import { ConditionsStrip } from "./ConditionsStrip";
 import { ZelloPanel } from "../ZelloPanel";
 import { PanelRightOpen, Map as MapIcon } from "lucide-react";
 
@@ -80,6 +83,8 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
         onBack={() => router.push("/")}
         onRefresh={refresh}
       />
+      <ConditionsStrip operation={op} />
+      <AlarmBar operation={op} />
       </div>
 
       {/* Main content: map + side panel */}
@@ -126,7 +131,7 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
             >
               <MapIcon size={14} />
             </button>
-            {(["zones", "datums", "sar", "reports", "comms", "zello", "teams", "conditions", "audit"] as const).map((tab) => (
+            {(["zones", "datums", "timeline", "sar", "reports", "comms", "zello", "teams", "conditions", "audit"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setRightPanel(tab)}
@@ -145,6 +150,7 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
           <div className="flex-1 overflow-y-auto">
             {rightPanel === "zones" && <ZoneStatusBoard operation={op} onRefresh={refresh} />}
             {rightPanel === "datums" && <DatumsPanel operation={op} onRefresh={refresh} />}
+            {rightPanel === "timeline" && <SubjectTimeline operation={op} />}
             {rightPanel === "sar" && <SarToolsPanel operation={op} />}
             {rightPanel === "reports" && <ReportsPanel operationId={op.id} />}
             {rightPanel === "comms" && <CommsLog operationId={op.id} />}

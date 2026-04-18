@@ -91,7 +91,6 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
     settingDatum,
     setSettingDatum,
     showAirspace,
-    previewZones,
     mobilePanelOpen,
     addingDatum,
     setAddingDatum,
@@ -169,23 +168,8 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
         </Marker>
       ))}
 
-      {/* Preview zones (pre-deploy, dashed amber overlay) */}
-      {previewZones.map((pz: any, i) => {
-        if (!pz?.geometry) return null;
-        return (
-          <GeoJSON
-            key={`preview-${i}-${JSON.stringify(pz.geometry).length}`}
-            data={pz.geometry}
-            style={{
-              color: "#f59e0b",
-              weight: 2,
-              fillColor: "#f59e0b",
-              fillOpacity: 0.08,
-              dashArray: "4,4",
-            }}
-          />
-        );
-      })}
+      {/* Preview zones — dashed outlines, priority-tinted, auto-fit on appear */}
+      <PreviewZonesLayer />
 
       {/* Zone polygons */}
       {(operation.zones || []).map((zone) => (
@@ -251,6 +235,7 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
 
       <FitBounds operation={operation} />
       <InvalidateSizeOnResize trigger={mobilePanelOpen} />
+      <MapFlyToListener />
     </MapContainer>
 
     {/* Setting datum banner */}
@@ -335,6 +320,20 @@ function ZoneLayer({
   );
 }
 
+// Watches store.mapFlyTo and pans/zooms the leaflet map on demand. Other panels
+// (subject timeline, reports) dispatch coords through the store rather than
+// threading a map ref through React props.
+function MapFlyToListener() {
+  const map = useMap();
+  const flyTo = useSearchStore((s) => s.mapFlyTo);
+  useEffect(() => {
+    if (!flyTo) return;
+    const z = flyTo.zoom ?? Math.max(map.getZoom(), 15);
+    map.flyTo([flyTo.lat, flyTo.lon], z, { duration: 0.6 });
+  }, [flyTo?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
+  return null;
+}
+
 function FitBounds({ operation }: { operation: SearchOperation }) {
   const map = useMap();
   const fittedRef = useRef(false);
@@ -369,6 +368,134 @@ function FitBounds({ operation }: { operation: SearchOperation }) {
 // refetches (debounced) after pan/zoom. Large viewports (> ~20km span) are
 // skipped to avoid punishing the Overpass proxy — a small banner is shown
 // asking the user to zoom in via the store's hazardsHint flag.
+// Renders the preview zones produced by the Grid Generator. Styling is tinted
+// by priority so the operator can see at a glance where the high-value cells
+// are before committing. The first time the preview appears (or zone count
+// changes) we fit the map to the preview bounds — if you generate 40 zones
+// you want to see all 40, not just whatever the previous viewport happened to
+// contain. Label markers at each polygon centroid show the zone name; kept
+// non-interactive so they don't steal clicks from the underlying polygon.
+function PreviewZonesLayer() {
+  const map = useMap();
+  const previewZones = useSearchStore((s) => s.previewZones);
+  const lastCountRef = useRef(0);
+
+  // Fit only when the count changes (0 → N or N → M). Including `previewZones`
+  // itself in the dep array would re-fit on every unrelated store update since
+  // Zustand returns fresh array references.
+  useEffect(() => {
+    const len = previewZones.length;
+    if (len === 0) { lastCountRef.current = 0; return; }
+    if (lastCountRef.current === len) return;
+    lastCountRef.current = len;
+    try {
+      const group = L.featureGroup(
+        previewZones
+          .map((pz: any) => (pz?.geometry ? L.geoJSON(pz.geometry as any) : null))
+          .filter(Boolean) as L.Layer[]
+      );
+      if (group.getLayers().length > 0) {
+        map.fitBounds(group.getBounds().pad(0.2), { animate: true, duration: 0.5 });
+      }
+    } catch {
+      // Malformed preview geometry — not worth bubbling, user can still inspect.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewZones.length, map]);
+
+  if (previewZones.length === 0) return null;
+
+  return (
+    <>
+      {previewZones.flatMap((pz: any, i: number) => {
+        if (!pz?.geometry) return [];
+        const priority = typeof pz.priority === "number" ? pz.priority : 3;
+        const color = priorityColor(priority);
+        const geom: GeoJSON.Geometry =
+          (pz.geometry as GeoJSON.Feature).geometry || (pz.geometry as GeoJSON.Geometry);
+        const centroid = centroidOfGeometry(geom);
+        const key = `preview-${i}-${JSON.stringify(pz.geometry).length}`;
+        const items: any[] = [
+          <GeoJSON
+            key={key}
+            data={pz.geometry}
+            style={{
+              color,
+              weight: 2,
+              fillColor: color,
+              fillOpacity: 0.12,
+              dashArray: "4,4",
+            }}
+          />,
+        ];
+        if (centroid && pz.name) {
+          items.push(
+            <Marker
+              key={`${key}-label`}
+              position={centroid}
+              icon={previewLabelIcon(pz.name, priority)}
+              interactive={false}
+            />
+          );
+        }
+        return items;
+      })}
+    </>
+  );
+}
+
+function priorityColor(p: number): string {
+  // Priority 1 = most likely search area. Fade toward muted amber for lower
+  // priority so the eye lands on high-POA cells first.
+  if (p <= 1) return "#f87171"; // red-400
+  if (p === 2) return "#fbbf24"; // amber-400
+  if (p === 3) return "#f59e0b"; // amber-500
+  if (p === 4) return "#d97706"; // amber-600
+  return "#92400e"; // amber-800
+}
+
+function previewLabelIcon(name: string, priority: number): L.DivIcon {
+  const color = priorityColor(priority);
+  return L.divIcon({
+    html: `<div style="padding:1px 5px;background:rgba(17,24,39,0.85);color:${color};border:1px solid ${color}66;border-radius:3px;font-size:10px;font-family:system-ui;font-weight:600;white-space:nowrap;transform:translate(-50%,-50%)">${escapeHtml(name)}</div>`,
+    className: "",
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+  });
+}
+
+// Cheap arithmetic centroid from the first ring / coord list. Good enough for
+// placing a label — we're not computing anything that depends on accuracy.
+function centroidOfGeometry(geom: GeoJSON.Geometry): [number, number] | null {
+  try {
+    let coords: number[][] = [];
+    if (geom.type === "Polygon") {
+      coords = (geom.coordinates as number[][][])[0];
+    } else if (geom.type === "MultiPolygon") {
+      coords = (geom.coordinates as number[][][][])[0][0];
+    } else if (geom.type === "LineString") {
+      coords = geom.coordinates as number[][];
+    } else if (geom.type === "MultiLineString") {
+      coords = (geom.coordinates as number[][][]).flat();
+    } else if (geom.type === "Point") {
+      const c = geom.coordinates as number[];
+      return [c[1], c[0]];
+    } else {
+      return null;
+    }
+    if (!coords.length) return null;
+    let sx = 0;
+    let sy = 0;
+    for (const c of coords) {
+      sx += c[0];
+      sy += c[1];
+    }
+    return [sy / coords.length, sx / coords.length];
+  } catch {
+    return null;
+  }
+}
+
 function HazardsAutoLoader() {
   const map = useMap();
   const { showHazards, showAttractors, setOsmFeatures, setHazardsHint } = useSearchStore();

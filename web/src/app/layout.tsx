@@ -4,6 +4,13 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Search Ops",
   description: "SAR / Search Ops command surface",
+  manifest: "/manifest.webmanifest",
+  themeColor: "#0b0f14",
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Search Ops" },
+  icons: {
+    icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/icon.svg" }],
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

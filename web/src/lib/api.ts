@@ -135,7 +135,10 @@ export const admin = {
 // ── Siphon (data collection) — proxied through backend ──
 export const siphon = {
   metar: (icao = "EGPK") => request<MetarData>(`/siphon/metar/${icao}`),
-  sunPosition: () => request<Record<string, unknown>>("/siphon/astro/sun"),
+  sunPosition: (lat?: number, lon?: number) => {
+    const qs = typeof lat === "number" && typeof lon === "number" ? `?lat=${lat}&lon=${lon}` : "";
+    return request<AstroSun>(`/siphon/astro/sun${qs}`);
+  },
   weather: (key: string) => request<unknown>(`/siphon/weather/${key}`),
   ukAirspace: async () => {
     try {
@@ -281,6 +284,19 @@ export const search = {
 };
 
 // ── Types (subset used by search components) ──
+export interface AstroSun {
+  sunrise: string;
+  sunset: string;
+  solar_noon: string;
+  day_length_hours: number;
+  civil_twilight_begin: string;
+  civil_twilight_end: string;
+  nautical_twilight_begin: string;
+  nautical_twilight_end: string;
+  astronomical_twilight_begin: string;
+  astronomical_twilight_end: string;
+}
+
 export interface MetarData {
   raw: string;
   station: string;

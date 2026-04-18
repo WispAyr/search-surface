@@ -44,7 +44,7 @@ interface SearchState {
   showSitrepPanel: boolean;
   settingDatum: boolean;
   showAirspace: boolean;
-  rightPanel: "zones" | "datums" | "reports" | "comms" | "teams" | "conditions" | "audit" | "sar" | "zello";
+  rightPanel: "zones" | "datums" | "timeline" | "reports" | "comms" | "teams" | "conditions" | "audit" | "sar" | "zello";
   // ── SAR Tools (subject profile + rings + isochrones + hazards) ──
   showSarTools: boolean;
   subjectProfileId: string | null; // e.g. 'dementia', 'child_7_9', 'dog'
@@ -58,6 +58,17 @@ interface SearchState {
   hazardsHint: string | null;
   vehicleRoute: GeoJSON.LineString | null;
   vehicleRouteMeta: { distance_m: number; duration_s: number } | null;
+
+  // Alarms the IC has dismissed for this session — keyed by alarm.id (see
+  // AlarmBar). Cleared when the operation changes. Not persisted: re-surfacing
+  // on reload is desirable; a dismiss that hides the alarm forever would risk
+  // real incidents being silenced.
+  dismissedAlarmIds: Set<string>;
+
+  // Map fly-to target. Set by panels (timeline, reports, teams) to pan the map
+  // to a point. A monotonically incrementing nonce makes repeated clicks on
+  // the same coords re-trigger the effect.
+  mapFlyTo: { lat: number; lon: number; zoom?: number; nonce: number } | null;
 
   // ── Actions ──
   setOperations: (ops: SearchOperation[]) => void;
@@ -102,6 +113,9 @@ interface SearchState {
   setOsmFeatures: (h: SearchState["hazards"], a: SearchState["attractors"]) => void;
   setHazardsHint: (h: string | null) => void;
   setVehicleRoute: (g: GeoJSON.LineString | null, meta: SearchState["vehicleRouteMeta"]) => void;
+  dismissAlarm: (id: string) => void;
+  clearDismissedAlarms: () => void;
+  setMapFlyTo: (lat: number, lon: number, zoom?: number) => void;
 }
 
 export const useSearchStore = create<SearchState>((set) => ({
@@ -138,10 +152,20 @@ export const useSearchStore = create<SearchState>((set) => ({
   hazardsHint: null,
   vehicleRoute: null,
   vehicleRouteMeta: null,
+  dismissedAlarmIds: new Set<string>(),
+  mapFlyTo: null,
 
   setOperations: (ops) => set({ operations: ops }),
   setOperationsLoading: (v) => set({ operationsLoading: v }),
-  setActiveOperation: (op) => set({ activeOperation: op }),
+  setActiveOperation: (op) =>
+    set((s) => {
+      // Switching operations (or clearing) resets per-op UI state that would
+      // otherwise bleed across incidents — most notably, dismissed alarms.
+      if ((s.activeOperation?.id ?? null) !== (op?.id ?? null)) {
+        return { activeOperation: op, dismissedAlarmIds: new Set<string>() };
+      }
+      return { activeOperation: op };
+    }),
   setActiveOperationLoading: (v) => set({ activeOperationLoading: v }),
   setReports: (reports) => set({ reports }),
   addReport: (report) =>
@@ -201,4 +225,15 @@ export const useSearchStore = create<SearchState>((set) => ({
   setOsmFeatures: (hazards, attractors) => set({ hazards, attractors }),
   setHazardsHint: (h) => set({ hazardsHint: h }),
   setVehicleRoute: (g, meta) => set({ vehicleRoute: g, vehicleRouteMeta: meta }),
+  dismissAlarm: (id) =>
+    set((s) => {
+      const next = new Set(s.dismissedAlarmIds);
+      next.add(id);
+      return { dismissedAlarmIds: next };
+    }),
+  clearDismissedAlarms: () => set({ dismissedAlarmIds: new Set<string>() }),
+  setMapFlyTo: (lat, lon, zoom) =>
+    set((s) => ({
+      mapFlyTo: { lat, lon, zoom, nonce: (s.mapFlyTo?.nonce ?? 0) + 1 },
+    })),
 }));
