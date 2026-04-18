@@ -9,10 +9,12 @@
   },
   "dependencies": {
     "@tailwindcss/postcss": "latest",
+    "@turf/area": "^7.3.4",
     "@turf/bbox": "^7.3.4",
     "@turf/buffer": "^7.3.4",
     "@turf/circle": "^7.3.4",
     "@turf/destination": "^7.3.4",
+    "@turf/difference": "^7.3.4",
     "@turf/helpers": "^7.3.4",
     "@turf/hex-grid": "^7.3.4",
     "@turf/intersect": "^7.3.4",

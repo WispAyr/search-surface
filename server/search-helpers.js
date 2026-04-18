@@ -216,6 +216,156 @@ router.post('/osm/features', async (req, res) => {
   res.json({ hazards, attractors, partial: errors.length > 0, errors });
 });
 
+// ── Terrain polygons for smart-grid classification ──
+// Returns raw OSM polygons (land/water/intertidal hints) within a bbox so the
+// client can classify each grid cell locally without shipping all of Overpass
+// to the browser. Callers compute per-cell {land_pct, water_pct, intertidal_pct}
+// via turf; we just do the Overpass hop + long TTL cache.
+//
+// Response shape: { water: GeoJSON.FeatureCollection, coastline: FC, rivers: FC,
+//                   intertidal: FC, bbox, partial, errors }
+// - `water` is closed polygons tagged natural=water | waterway=riverbank
+//   | landuse=reservoir.
+// - `coastline` is linear ways tagged natural=coastline (client buffers 100m
+//   inland to approximate the wet zone).
+// - `rivers` is linear ways (waterway=river|stream|canal) for buffered strips.
+// - `intertidal` is natural=beach | natural=shoal | wetland=tidalflat polygons.
+router.post('/osm/terrain', async (req, res) => {
+  const { bbox } = req.body || {};
+  if (!bbox || bbox.length !== 4) return res.status(400).json({ error: 'bbox [s,w,n,e] required' });
+  const [s, w, n, e] = bbox.map(Number);
+  if (![s, w, n, e].every(Number.isFinite)) return res.status(400).json({ error: 'bbox must be numbers' });
+  // Cap area — same guard as /osm/features, bigger bboxes time out on Overpass.
+  if ((n - s) * (e - w) > 0.2) return res.status(400).json({ error: 'bbox too large (>0.2 sq deg)' });
+  const a = `(${s},${w},${n},${e})`;
+
+  // Split into three smaller queries so one timeout doesn't poison the other
+  // two — partial results are more useful than none. Each clocks in well under
+  // the Overpass 25s server-side timeout.
+  const waterQ = `[out:json][timeout:25];
+    (
+      way["natural"="water"]${a};
+      way["waterway"="riverbank"]${a};
+      way["landuse"="reservoir"]${a};
+      way["landuse"="basin"]${a};
+      relation["natural"="water"]${a};
+    );
+    out geom 400;`;
+  const coastRiverQ = `[out:json][timeout:25];
+    (
+      way["natural"="coastline"]${a};
+      way["waterway"~"^(river|stream|canal|drain|ditch)$"]${a};
+    );
+    out geom 600;`;
+  const intertidalQ = `[out:json][timeout:25];
+    (
+      way["natural"="beach"]${a};
+      way["natural"="shoal"]${a};
+      way["wetland"="tidalflat"]${a};
+      way["natural"="wetland"]${a};
+    );
+    out geom 200;`;
+
+  const keyBase = [s, w, n, e].map((v) => v.toFixed(3)).join(',');
+  const settle = async (q, key) => {
+    try { return await cached(key, 30 * 60_000, () => overpass(q, 25_000)); }
+    catch (err) { return { _error: err.message, elements: [] }; }
+  };
+  const [wr, cr, it] = await Promise.all([
+    settle(waterQ, `terr:w:${keyBase}`),
+    settle(coastRiverQ, `terr:c:${keyBase}`),
+    settle(intertidalQ, `terr:i:${keyBase}`),
+  ]);
+
+  // Convert Overpass "out geom" results → GeoJSON features. Overpass emits
+  // { type:'way', geometry:[{lat,lon},...] } for closed ways and the same for
+  // open ways (LineString). Relations with geom give per-member geometry too.
+  function elToFeature(el, tagsByClass) {
+    const tags = el.tags || {};
+    const klass = tagsByClass(tags);
+    if (!klass) return null;
+    const props = { klass, name: tags.name || null };
+    if (el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 2) {
+      const coords = el.geometry.map((p) => [p.lon, p.lat]);
+      // Closed ring → Polygon; open → LineString.
+      const first = coords[0], last = coords[coords.length - 1];
+      const closed = coords.length >= 4 && first[0] === last[0] && first[1] === last[1];
+      return closed
+        ? { type: 'Feature', properties: props, geometry: { type: 'Polygon', coordinates: [coords] } }
+        : { type: 'Feature', properties: props, geometry: { type: 'LineString', coordinates: coords } };
+    }
+    if (el.type === 'relation' && Array.isArray(el.members)) {
+      // Build a MultiPolygon from outer rings only (inner holes are rare and
+      // not critical for coarse classification).
+      const rings = el.members
+        .filter((m) => m.role === 'outer' && Array.isArray(m.geometry) && m.geometry.length >= 4)
+        .map((m) => m.geometry.map((p) => [p.lon, p.lat]))
+        .filter((r) => {
+          const a = r[0], b = r[r.length - 1];
+          return a[0] === b[0] && a[1] === b[1];
+        });
+      if (!rings.length) return null;
+      return {
+        type: 'Feature', properties: props,
+        geometry: { type: 'MultiPolygon', coordinates: rings.map((r) => [r]) },
+      };
+    }
+    return null;
+  }
+
+  const waterFC = { type: 'FeatureCollection', features: [] };
+  const coastFC = { type: 'FeatureCollection', features: [] };
+  const riverFC = { type: 'FeatureCollection', features: [] };
+  const intertidalFC = { type: 'FeatureCollection', features: [] };
+
+  for (const el of wr.elements || []) {
+    const f = elToFeature(el, (t) => {
+      if (t.natural === 'water') return 'water';
+      if (t.waterway === 'riverbank') return 'water';
+      if (t.landuse === 'reservoir' || t.landuse === 'basin') return 'water';
+      return null;
+    });
+    if (f) waterFC.features.push(f);
+  }
+  for (const el of cr.elements || []) {
+    const f = elToFeature(el, (t) => {
+      if (t.natural === 'coastline') return 'coastline';
+      if (t.waterway && /^(river|stream|canal|drain|ditch)$/.test(t.waterway)) return t.waterway;
+      return null;
+    });
+    if (!f) continue;
+    if (f.properties.klass === 'coastline') coastFC.features.push(f);
+    else riverFC.features.push(f);
+  }
+  for (const el of it.elements || []) {
+    const f = elToFeature(el, (t) => {
+      if (t.natural === 'beach') return 'beach';
+      if (t.natural === 'shoal') return 'shoal';
+      if (t.wetland === 'tidalflat') return 'tidalflat';
+      if (t.natural === 'wetland') return 'wetland';
+      return null;
+    });
+    if (f) intertidalFC.features.push(f);
+  }
+
+  const errors = [wr._error, cr._error, it._error].filter(Boolean);
+  res.json({
+    bbox: [s, w, n, e],
+    water: waterFC,
+    coastline: coastFC,
+    rivers: riverFC,
+    intertidal: intertidalFC,
+    counts: {
+      water: waterFC.features.length,
+      coastline: coastFC.features.length,
+      rivers: riverFC.features.length,
+      intertidal: intertidalFC.features.length,
+    },
+    partial: errors.length > 0,
+    errors,
+  });
+});
+
 // ── Vehicle route through a polygon (OSRM trip) ──
 // body: { waypoints: [[lat,lon], ...] }   (must already be sampled — we keep backend dumb)
 router.post('/route/vehicle', async (req, res) => {

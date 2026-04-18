@@ -195,6 +195,20 @@ export const searchHelpers = {
       method: "POST",
       body: JSON.stringify({ bbox }),
     }),
+  osmTerrain: (bbox: [number, number, number, number]) =>
+    request<{
+      bbox: [number, number, number, number];
+      water: GeoJSON.FeatureCollection;
+      coastline: GeoJSON.FeatureCollection;
+      rivers: GeoJSON.FeatureCollection;
+      intertidal: GeoJSON.FeatureCollection;
+      counts: { water: number; coastline: number; rivers: number; intertidal: number };
+      partial: boolean;
+      errors: string[];
+    }>("/search/osm/terrain", {
+      method: "POST",
+      body: JSON.stringify({ bbox }),
+    }),
   vehicleRoute: (waypoints: Array<[number, number]>) =>
     request<{ geometry: GeoJSON.LineString; distance_m: number; duration_s: number }>("/search/route/vehicle", {
       method: "POST",

@@ -8,6 +8,7 @@ import { searchHelpers } from "@/lib/api";
 import { AirspaceLayer } from "./AirspaceLayer";
 import { SarOverlays } from "./SarOverlays";
 import type { SearchOperation, SearchZone, SearchDatum } from "@/types/search";
+import { TERRAIN_FILL, compositionLabel } from "@/lib/terrainClassifier";
 import "leaflet/dist/leaflet.css";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -306,24 +307,41 @@ function ZoneLayer({
   onSelect: () => void;
   teamColor?: string;
 }) {
-  const color = teamColor || STATUS_COLORS[zone.status] || "#6b7280";
+  // Stroke = status/team colour (unchanged). Fill = terrain tint for
+  // unassigned cells with a classification, else fall back to status colour.
+  // This lets a controller scan a grid and instantly see water/intertidal
+  // cells without checking tooltips.
+  const strokeColor = teamColor || STATUS_COLORS[zone.status] || "#6b7280";
+  const unassigned = zone.status === "unassigned" && !teamColor;
+  const terrainClass = zone.terrain_class;
+  const fillColor = unassigned && terrainClass
+    ? TERRAIN_FILL[terrainClass]
+    : strokeColor;
+
   const weight = isSelected ? 4 : PRIORITY_WEIGHTS[zone.priority] || 2;
   const fillOpacity = zone.status === "complete"
     ? 0.1
     : isSelected
+    ? 0.35
+    // Bump fill on water/intertidal a touch so the hazard reads at a glance.
+    : (unassigned && (terrainClass === "water" || terrainClass === "intertidal"))
     ? 0.3
     : 0.15;
 
   if (!zone.geometry) return null;
 
+  const terrainBadge = zone.terrain_composition
+    ? `<br/><span style="color:#9ca3af">terrain:</span> ${compositionLabel(zone.terrain_composition)}`
+    : "";
+
   return (
     <GeoJSON
-      key={zone.id}
+      key={`${zone.id}:${terrainClass || "-"}`}
       data={zone.geometry}
       style={{
-        color,
+        color: strokeColor,
         weight,
-        fillColor: color,
+        fillColor,
         fillOpacity,
         dashArray: zone.status === "suspended" ? "5,5" : undefined,
       }}
@@ -335,7 +353,7 @@ function ZoneLayer({
           `<b>${zone.name}</b><br/>
           ${zone.search_method.replace(/_/g, " ")}<br/>
           POD: ${Math.round(zone.cumulative_pod * 100)}%<br/>
-          Status: ${zone.status}`,
+          Status: ${zone.status}${terrainBadge}`,
           { sticky: true, className: "leaflet-tooltip-dark" }
         );
       }}
@@ -433,20 +451,32 @@ function PreviewZonesLayer() {
       {previewZones.flatMap((pz: any, i: number) => {
         if (!pz?.geometry) return [];
         const priority = typeof pz.priority === "number" ? pz.priority : 3;
-        const color = priorityColor(priority);
+        const strokeColor = priorityColor(priority);
+        // Preview terrain tint: once classifyCells has folded terrain_class
+        // into the preview payload, fill reflects the terrain so the operator
+        // sees water/intertidal BEFORE hitting Create. Without classification
+        // we stay on the legacy priority-coloured dashed outline.
+        const terrainClass = pz.terrain_class as
+          | "land" | "water" | "intertidal" | "mixed" | undefined;
+        const fillColor = terrainClass ? TERRAIN_FILL[terrainClass] : strokeColor;
+        const fillOpacity = terrainClass === "water" || terrainClass === "intertidal"
+          ? 0.3
+          : terrainClass === "mixed"
+          ? 0.2
+          : 0.12;
         const geom: GeoJSON.Geometry =
           (pz.geometry as GeoJSON.Feature).geometry || (pz.geometry as GeoJSON.Geometry);
         const centroid = centroidOfGeometry(geom);
-        const key = `preview-${i}-${JSON.stringify(pz.geometry).length}`;
+        const key = `preview-${i}-${terrainClass || "-"}-${JSON.stringify(pz.geometry).length}`;
         const items: any[] = [
           <GeoJSON
             key={key}
             data={pz.geometry}
             style={{
-              color,
+              color: strokeColor,
               weight: 2,
-              fillColor: color,
-              fillOpacity: 0.12,
+              fillColor,
+              fillOpacity,
               dashArray: "4,4",
             }}
           />,

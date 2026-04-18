@@ -4,7 +4,8 @@ import { useMemo, useState } from "react";
 import { search } from "@/lib/api";
 import { useSearchStore } from "@/stores/search";
 import { isTeamSilent, isTeamFatigued, teamDeploymentMinutes, SILENT_THRESHOLD_MIN, FATIGUE_THRESHOLD_MIN } from "@/lib/teamStatus";
-import type { SearchOperation, SearchTeam } from "@/types/search";
+import type { SearchOperation, SearchTeam, PlatformType } from "@/types/search";
+import { PLATFORM_TYPES, PLATFORM_LABEL } from "@/lib/capabilities";
 import { Plus, MapPin, Clock, Copy, Radio, UserPlus, QrCode, AlertTriangle, ArrowUpDown, Timer } from "lucide-react";
 
 const STATUS_BADGE: Record<string, { bg: string; label: string }> = {
@@ -181,6 +182,31 @@ function TeamCard({ team }: { team: SearchTeam }) {
         <span className="flex items-center gap-1">
           <Radio size={10} /> {team.capability}
         </span>
+        {/* Smart-grid Tier A2. Inline <select> so IC can fix a missing/wrong
+            platform_type without opening a separate edit form. Legacy teams
+            (platform_type = null) render as "unset" with the same control. */}
+        <span className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+          <span className="text-fg-4/80">platform:</span>
+          <select
+            value={team.platform_type || ""}
+            onChange={async (e) => {
+              setUpdating(true);
+              try {
+                await search.updateTeam(team.id, { platform_type: e.target.value || null });
+              } finally {
+                setUpdating(false);
+              }
+            }}
+            disabled={updating}
+            className="px-1 py-0.5 bg-surface-700 border border-surface-600 rounded text-[10px]"
+            title="Platform type drives the zone-match warning."
+          >
+            <option value="">unset</option>
+            {PLATFORM_TYPES.map((p) => (
+              <option key={p} value={p}>{PLATFORM_LABEL[p]}</option>
+            ))}
+          </select>
+        </span>
         {deploymentLabel && (
           <span className={`flex items-center gap-1 ${fatigued ? "text-amber-300 font-medium" : deploymentMin! > FATIGUE_THRESHOLD_MIN * 0.75 ? "text-amber-400" : ""}`}>
             <Timer size={10} /> {deploymentLabel} deployed
@@ -277,13 +303,22 @@ function CreateTeamForm({ operationId, onDone }: { operationId: string; onDone: 
   const [name, setName] = useState("");
   const [callsign, setCallsign] = useState("");
   const [capability, setCapability] = useState("foot");
+  // Smart-grid Tier A2. Defaulted to ground so the terrain guard can do
+  // something useful out of the box, but "" is a valid choice (stored as
+  // null) for legacy/air-gap cases.
+  const [platformType, setPlatformType] = useState<PlatformType | "">("ground");
   const [loading, setLoading] = useState(false);
 
   const handleCreate = async () => {
     if (!name.trim()) return;
     setLoading(true);
     try {
-      await search.createTeam(operationId, { name, callsign: callsign || name, capability });
+      await search.createTeam(operationId, {
+        name,
+        callsign: callsign || name,
+        capability,
+        platform_type: platformType || null,
+      });
       onDone();
     } finally {
       setLoading(false);
@@ -318,6 +353,20 @@ function CreateTeamForm({ operationId, onDone }: { operationId: string; onDone: 
           <option value="water">Water</option>
         </select>
       </div>
+      <label className="flex flex-col gap-0.5">
+        <span className="text-[10px] text-fg-4 uppercase tracking-wider">Platform type</span>
+        <select
+          value={platformType}
+          onChange={(e) => setPlatformType(e.target.value as PlatformType | "")}
+          className="w-full px-2 py-1.5 bg-surface-700 border border-surface-600 rounded text-xs"
+          title="Drives the zone-match warning when assigning this team to a zone."
+        >
+          <option value="">— unset —</option>
+          {PLATFORM_TYPES.map((p) => (
+            <option key={p} value={p}>{PLATFORM_LABEL[p]}</option>
+          ))}
+        </select>
+      </label>
       <div className="flex justify-end gap-2">
         <button onClick={onDone} className="px-2 py-1 text-xs text-fg-4">Cancel</button>
         <button onClick={handleCreate} disabled={loading || !name.trim()} className="px-3 py-1 text-xs bg-accent text-black rounded disabled:opacity-50">
