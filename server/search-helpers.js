@@ -19,21 +19,21 @@ const OVERPASS_ENDPOINTS = (process.env.OVERPASS_URLS
 const OVERPASS = OVERPASS_ENDPOINTS[0];
 
 async function overpass(query, timeoutMs = 25000) {
-  // Try endpoints in sequence; first 2xx wins. Timeouts or 5xx → next mirror.
-  let lastErr;
-  for (const url of OVERPASS_ENDPOINTS) {
-    try {
-      const r = await axios.post(url, `data=${encodeURIComponent(query)}`, {
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA },
-        timeout: timeoutMs,
-        validateStatus: s => s >= 200 && s < 300,
-      });
-      return r.data;
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr || new Error('all overpass mirrors failed');
+  // Race all mirrors in parallel — whichever returns first wins. A sequential
+  // fallback loop stacked wait times across slow mirrors and frequently
+  // exceeded nginx's 60s proxy_read_timeout in dense urban polygons. With a
+  // race, the total wait is ≤ timeoutMs regardless of how many mirrors hang.
+  if (!OVERPASS_ENDPOINTS.length) throw new Error('no overpass endpoints configured');
+  const body = `data=${encodeURIComponent(query)}`;
+  const hdrs = { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA };
+  const attempts = OVERPASS_ENDPOINTS.map((url) =>
+    axios.post(url, body, { headers: hdrs, timeout: timeoutMs, validateStatus: s => s >= 200 && s < 300 })
+      .then((r) => r.data)
+  );
+  return Promise.any(attempts).catch((e) => {
+    const errs = (e?.errors || []).map((x) => x?.message || String(x)).join('; ');
+    throw new Error(`all overpass mirrors failed: ${errs || 'unknown'}`);
+  });
 }
 const OSRM = process.env.OSRM_URL || 'https://router.project-osrm.org';
 const UA = 'wispayr-search/1.0 (ops@wispayr.online)';
@@ -221,11 +221,18 @@ router.post('/osm/features', async (req, res) => {
 router.post('/route/vehicle', async (req, res) => {
   const { waypoints } = req.body || {};
   if (!Array.isArray(waypoints) || waypoints.length < 2) return res.status(400).json({ error: 'waypoints[] required (>=2)' });
-  if (waypoints.length > 50) return res.status(400).json({ error: 'max 50 waypoints' });
+  // Public OSRM trip-API scales poorly with waypoint count and the quality
+  // ceiling hits around 10-12 anyway. Clamp to 12 + dedupe near-identical
+  // coords so client-side polygon sampling can't accidentally request 20
+  // waypoints that boil down to the same street corner twice.
   try {
-    const coords = waypoints.map(([la, lo]) => `${lo},${la}`).join(';');
-    const url = `${OSRM}/trip/v1/driving/${coords}?source=first&roundtrip=true&overview=full&geometries=geojson&steps=false`;
-    const r = await axios.get(url, { timeout: 15000, headers: { 'User-Agent': UA } });
+    const pts = dedupeWaypoints(waypoints).slice(0, 12);
+    if (pts.length < 2) return res.status(400).json({ error: 'need >=2 distinct waypoints after dedupe' });
+    const coords = pts.map(([la, lo]) => `${lo},${la}`).join(';');
+    // overview=simplified is ~10-30x smaller than full and just as usable for
+    // the "show me the route" map overlay. steps=false skips turn-by-turn.
+    const url = `${OSRM}/trip/v1/driving/${coords}?source=first&roundtrip=true&overview=simplified&geometries=geojson&steps=false`;
+    const r = await axios.get(url, { timeout: 20000, headers: { 'User-Agent': UA } });
     const trip = r.data.trips?.[0];
     if (!trip) return res.status(502).json({ error: 'no trip found' });
     res.json({
@@ -238,6 +245,21 @@ router.post('/route/vehicle', async (req, res) => {
     res.status(502).json({ error: e.message });
   }
 });
+
+// Waypoints closer than ~30m (0.00028°) are treated as duplicates — OSRM
+// routes the same street segment either way and the extra node just slows
+// the trip solver.
+function dedupeWaypoints(pts) {
+  const out = [];
+  for (const p of pts) {
+    if (!Array.isArray(p) || p.length !== 2) continue;
+    const [la, lo] = p;
+    if (!isFinite(la) || !isFinite(lo)) continue;
+    const near = out.some(([pla, plo]) => Math.abs(pla - la) < 0.00028 && Math.abs(plo - lo) < 0.00028);
+    if (!near) out.push([la, lo]);
+  }
+  return out;
+}
 
 // ── Static simplified UK airspace (fallback for siphon) ──
 // Major CTRs/ATZs covering Scotland & NW England. Not flight-safety grade — ops awareness only.

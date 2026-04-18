@@ -92,7 +92,13 @@ export function SarToolsPanel({ operation }: Props) {
       const d = await searchHelpers.osmStreets(coords);
       setStreets(d.streets);
     } catch (e) {
-      setStreetError((e as Error).message);
+      const msg = (e as Error).message || "";
+      const isTimeout = /504|timeout|gateway/i.test(msg);
+      setStreetError(
+        isTimeout
+          ? "OSM query took too long. Dense urban zones can time out — try a smaller zone or retry in a moment."
+          : msg
+      );
     } finally {
       setLoadingStreets(false);
     }
@@ -109,7 +115,13 @@ export function SarToolsPanel({ operation }: Props) {
       const d = await searchHelpers.vehicleRoute(sampled);
       setVehicleRoute(d.geometry, { distance_m: d.distance_m, duration_s: d.duration_s });
     } catch (e) {
-      alert(`Route failed: ${(e as Error).message}`);
+      const msg = (e as Error).message || "";
+      const isTimeout = /504|timeout|gateway/i.test(msg);
+      alert(
+        isTimeout
+          ? "Route took too long. OSRM couldn't solve this zone in time — try a smaller zone or retry."
+          : `Route failed: ${msg}`
+      );
     } finally {
       setBusy(null);
     }
@@ -277,7 +289,7 @@ export function SarToolsPanel({ operation }: Props) {
               disabled={loadingStreets}
               className="w-full px-2 py-1.5 bg-bg-2 border border-fg-5 rounded hover:bg-bg-3 disabled:opacity-40"
             >
-              {loadingStreets ? "Querying OSM…" : `List streets in "${selectedZone.name}"`}
+              {loadingStreets ? "Querying OSM… (up to ~30s for dense zones)" : `List streets in "${selectedZone.name}"`}
             </button>
             {streetError && <div className="mt-1 text-rose-400">{streetError}</div>}
             {streets.length > 0 && (
@@ -311,7 +323,7 @@ export function SarToolsPanel({ operation }: Props) {
               disabled={busy === "route"}
               className="w-full px-2 py-1.5 bg-bg-2 border border-fg-5 rounded hover:bg-bg-3 disabled:opacity-40"
             >
-              {busy === "route" ? "Routing…" : "Generate driving route"}
+              {busy === "route" ? "Routing… (up to ~30s)" : "Generate driving route"}
             </button>
             {vehicleRoute && vehicleRouteMeta && (
               <div className="mt-2 p-2 bg-bg-2 rounded text-[11px]">
