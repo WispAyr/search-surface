@@ -23,17 +23,32 @@ async function overpass(query, timeoutMs = 25000) {
   // fallback loop stacked wait times across slow mirrors and frequently
   // exceeded nginx's 60s proxy_read_timeout in dense urban polygons. With a
   // race, the total wait is ≤ timeoutMs regardless of how many mirrors hang.
+  //
+  // One automatic retry after 800ms: every couple of weeks the public Overpass
+  // fleet hits a synchronised 504/429 window and all three mirrors fail inside
+  // the same second. A single short backoff catches that transient without
+  // materially extending the p99 wait (the retry still races all mirrors).
   if (!OVERPASS_ENDPOINTS.length) throw new Error('no overpass endpoints configured');
   const body = `data=${encodeURIComponent(query)}`;
   const hdrs = { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA };
-  const attempts = OVERPASS_ENDPOINTS.map((url) =>
-    axios.post(url, body, { headers: hdrs, timeout: timeoutMs, validateStatus: s => s >= 200 && s < 300 })
-      .then((r) => r.data)
-  );
-  return Promise.any(attempts).catch((e) => {
-    const errs = (e?.errors || []).map((x) => x?.message || String(x)).join('; ');
-    throw new Error(`all overpass mirrors failed: ${errs || 'unknown'}`);
-  });
+  const raceOnce = () => {
+    const attempts = OVERPASS_ENDPOINTS.map((url) =>
+      axios.post(url, body, { headers: hdrs, timeout: timeoutMs, validateStatus: s => s >= 200 && s < 300 })
+        .then((r) => r.data)
+    );
+    return Promise.any(attempts);
+  };
+  try {
+    return await raceOnce();
+  } catch (e1) {
+    await new Promise((r) => setTimeout(r, 800));
+    try {
+      return await raceOnce();
+    } catch (e2) {
+      const errs = (e2?.errors || []).map((x) => x?.message || String(x)).join('; ');
+      throw new Error(`all overpass mirrors failed after retry: ${errs || 'unknown'}`);
+    }
+  }
 }
 const OSRM = process.env.OSRM_URL || 'https://router.project-osrm.org';
 const UA = 'wispayr-search/1.0 (ops@wispayr.online)';

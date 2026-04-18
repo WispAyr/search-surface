@@ -208,6 +208,18 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
           setRiverError(null);
           setRiverWarnings([]);
           const res = await searchHelpers.osmRivers([s, w, n, e]);
+          // Distinguish "Overpass failed" (partial=true + 0 rivers) from "no
+          // rivers in bbox" (partial=false + 0 rivers). The former is worth a
+          // retry; the latter means we're genuinely inland.
+          if (res.partial && (res.rivers?.features?.length ?? 0) === 0) {
+            const first = res.errors?.[0] || "Overpass unavailable";
+            setRiverError(`OSM waterway lookup failed: ${first}. Try again in a minute.`);
+            setRiverFetching(false);
+            return;
+          }
+          if (res.partial) {
+            setRiverWarnings((w) => [...w, "OSM waterway data partial — some branches may be missing."]);
+          }
           params.datum = datum!;
           params.hours = riverHours;
           params.velocityMs = riverVelocity;
@@ -215,7 +227,10 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
           params.rivers = res.rivers.features as any;
           params.collectionPoints = res.collection_points.features as any;
         } catch (err: any) {
-          setRiverError(err?.message || "Failed to fetch OSM waterways");
+          const msg = err?.message || String(err);
+          setRiverError(/fetch/i.test(msg)
+            ? "Network error reaching OSM waterway service. Check connection and retry."
+            : msg);
           setRiverFetching(false);
           return;
         } finally {

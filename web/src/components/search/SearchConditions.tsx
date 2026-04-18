@@ -8,6 +8,7 @@ import {
   nearestGauge,
   gaugeStateLabel,
   gaugeSparkline,
+  gaugeSuggestPreset,
   GAUGE_TREND_FILL,
   type NearestGauge,
 } from "@/lib/riverGauges";
@@ -432,6 +433,7 @@ function GaugeChip({ nearest, partial }: { nearest: NearestGauge; partial: boole
   const sparkTitle = spark
     ? `${spark.min_m.toFixed(2)} → ${spark.max_m.toFixed(2)} m (Δ ${delta! >= 0 ? "+" : ""}${delta!.toFixed(2)}) · ${spark.sample_count} samples`
     : "";
+  const suggest = gaugeSuggestPreset(nearest.gauge);
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-2 text-[11px] text-fg-2">
@@ -443,6 +445,9 @@ function GaugeChip({ nearest, partial }: { nearest: NearestGauge; partial: boole
         )}
         <span className="truncate">{gaugeStateLabel(nearest)}</span>
       </div>
+      {suggest.rationale && (
+        <div className="text-[10px] text-fg-3 italic">{suggest.rationale}</div>
+      )}
       {partial && (
         <div className="text-[9px] text-amber-400">One provider unavailable — reading from single source.</div>
       )}
