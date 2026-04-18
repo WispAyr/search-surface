@@ -71,7 +71,7 @@ export function SarToolsPanel({ operation }: Props) {
     const bbox: [number, number, number, number] = [datumLat - r, datumLon - r * 1.6, datumLat + r, datumLon + r * 1.6];
     try {
       const d = await searchHelpers.osmFeatures(bbox);
-      setOsmFeatures(d.hazards, d.attractors);
+      setOsmFeatures(d.hazards, d.attractors, d.hazard_lines);
       setShowHazards(true);
       setShowAttractors(true);
     } catch (e) {

@@ -196,7 +196,11 @@ export const searchHelpers = {
       body: JSON.stringify({ polygon }),
     }),
   osmFeatures: (bbox: [number, number, number, number]) =>
-    request<{ hazards: Array<{ kind: string; name: string; lat: number; lon: number }>; attractors: Array<{ kind: string; name: string; lat: number; lon: number }> }>("/search/osm/features", {
+    request<{
+      hazards: Array<{ kind: string; name: string; lat: number; lon: number }>;
+      hazard_lines: Array<{ kind: string; name: string; coords: Array<[number, number]> }>;
+      attractors: Array<{ kind: string; name: string; lat: number; lon: number }>;
+    }>("/search/osm/features", {
       method: "POST",
       body: JSON.stringify({ bbox }),
     }),

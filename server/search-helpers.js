@@ -210,13 +210,23 @@ router.post('/osm/features', async (req, res) => {
   const [s, w, n, e] = tiled;
   const a = `(${s},${w},${n},${e})`;
 
-  // Split into two smaller queries so one timeout doesn't sink the other.
+  // Three queries:
+  //  • linesQ: linear hazards with full geometry (`out geom`) so the client
+  //    can render them as polylines. Per-node icons made the Ayr-Prestwick
+  //    rail line look like a cluster of disconnected pins.
+  //  • pointsQ: areal / point hazards that are fine as a single center marker
+  //    (cliffs, quarries, mineshafts).
+  //  • attractorsQ: unchanged — all point-renderable.
   // Dropped: natural=water (too many polygons in urban areas), shop=* (too many nodes).
-  const hazardsQ = `[out:json][timeout:20];
+  const linesQ = `[out:json][timeout:20];
     (
       way["waterway"~"river|stream|canal"]${a};
-      way["natural"="cliff"]${a};
       way["railway"="rail"]${a};
+    );
+    out geom 400;`;
+  const pointsQ = `[out:json][timeout:20];
+    (
+      way["natural"="cliff"]${a};
       way["landuse"="quarry"]${a};
       way["man_made"="mineshaft"]${a};
     );
@@ -229,21 +239,32 @@ router.post('/osm/features', async (req, res) => {
     );
     out center tags 400;`;
 
-  const classify = (el) => {
+  const classifyPoint = (el) => {
     const t = el.tags || {};
     const lat = el.lat ?? el.center?.lat;
     const lon = el.lon ?? el.center?.lon;
     if (!lat || !lon) return null;
     const name = t.name || '';
-    if (/river|stream|canal/.test(t.waterway || '')) return { kind: 'water', name, lat, lon, _cat: 'hazard' };
     if (t.natural === 'cliff') return { kind: 'cliff', name, lat, lon, _cat: 'hazard' };
-    if (t.railway === 'rail') return { kind: 'railway', name, lat, lon, _cat: 'hazard' };
     if (t.landuse === 'quarry') return { kind: 'quarry', name, lat, lon, _cat: 'hazard' };
     if (t.man_made === 'mineshaft') return { kind: 'mineshaft', name, lat, lon, _cat: 'hazard' };
     if (/shelter|bus_station/.test(t.amenity || '')) return { kind: t.amenity, name, lat, lon, _cat: 'attractor' };
     if (/cafe|pub|restaurant|fast_food/.test(t.amenity || '')) return { kind: t.amenity, name, lat, lon, _cat: 'attractor' };
     if (/playground|park|nature_reserve/.test(t.leisure || '')) return { kind: t.leisure, name, lat, lon, _cat: 'attractor' };
     return null;
+  };
+  const classifyLine = (el) => {
+    const t = el.tags || {};
+    const geom = Array.isArray(el.geometry) ? el.geometry : null;
+    if (!geom || geom.length < 2) return null;
+    const coords = geom.map((g) => [g.lat, g.lon]).filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    if (coords.length < 2) return null;
+    const name = t.name || '';
+    let kind = null;
+    if (t.railway === 'rail') kind = 'railway';
+    else if (/^(river|stream|canal)$/.test(t.waterway || '')) kind = 'water';
+    if (!kind) return null;
+    return { kind, name, coords };
   };
 
   // Overpass server-side timeout is 20s for these queries, axios gets 1s
@@ -262,16 +283,18 @@ router.post('/osm/features', async (req, res) => {
         : r.value;
     } catch (e) { return { _error: e.message, elements: [] }; }
   };
-  const [hz, at] = await Promise.all([
-    settle('feat:hz', hazardsQ),
+  const [ln, pt, at] = await Promise.all([
+    settle('feat:hl', linesQ),
+    settle('feat:hp', pointsQ),
     settle('feat:at', attractorsQ),
   ]);
-  const hazards = [], attractors = [];
-  for (const el of hz.elements || []) { const c = classify(el); if (c?._cat === 'hazard') { delete c._cat; hazards.push(c); } }
-  for (const el of at.elements || []) { const c = classify(el); if (c?._cat === 'attractor') { delete c._cat; attractors.push(c); } }
-  const errors = [hz._error, at._error].filter(Boolean);
-  const stale = Boolean(hz._stale || at._stale);
-  res.json({ hazards, attractors, partial: errors.length > 0, errors, stale });
+  const hazards = [], hazardLines = [], attractors = [];
+  for (const el of ln.elements || []) { const c = classifyLine(el); if (c) hazardLines.push(c); }
+  for (const el of pt.elements || []) { const c = classifyPoint(el); if (c?._cat === 'hazard') { delete c._cat; hazards.push(c); } }
+  for (const el of at.elements || []) { const c = classifyPoint(el); if (c?._cat === 'attractor') { delete c._cat; attractors.push(c); } }
+  const errors = [ln._error, pt._error, at._error].filter(Boolean);
+  const stale = Boolean(ln._stale || pt._stale || at._stale);
+  res.json({ hazards, hazard_lines: hazardLines, attractors, partial: errors.length > 0, errors, stale });
 });
 
 // ── Terrain polygons for smart-grid classification ──

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Circle, GeoJSON, Marker, Popup } from "react-leaflet";
+import { Circle, GeoJSON, Marker, Polyline, Popup } from "react-leaflet";
 import L from "leaflet";
 import { useSearchStore } from "@/stores/search";
 import { searchHelpers } from "@/lib/api";
@@ -23,7 +23,7 @@ export function SarOverlays({ datumLat, datumLon }: Props) {
     subjectProfileId, showLpbRings,
     travelModes, travelMinutes,
     showHazards, showAttractors,
-    hazards, attractors,
+    hazards, hazardLines, attractors,
     vehicleRoute,
   } = useSearchStore();
 
@@ -84,7 +84,21 @@ export function SarOverlays({ datumLat, datumLon }: Props) {
         );
       })}
 
-      {/* ── Hazards ── */}
+      {/* ── Linear hazards (rail, rivers) ── */}
+      {showHazards && hazardLines.map((h, i) => (
+        <Polyline
+          key={`hl-${i}`}
+          positions={h.coords}
+          pathOptions={hazardLineStyle(h.kind)}
+        >
+          <Popup>
+            <strong>⚠ {h.kind}</strong><br />
+            {h.name || "(unnamed)"}
+          </Popup>
+        </Polyline>
+      ))}
+
+      {/* ── Point hazards (cliffs, quarries, mineshafts) ── */}
       {showHazards && hazards.map((h, i) => (
         <Marker
           key={`hz-${i}`}
@@ -121,6 +135,16 @@ export function SarOverlays({ datumLat, datumLon }: Props) {
       )}
     </>
   );
+}
+
+function hazardLineStyle(kind: string): L.PathOptions {
+  if (kind === "railway") {
+    return { color: "#f43f5e", weight: 3, opacity: 0.85, dashArray: "8,6" };
+  }
+  if (kind === "water") {
+    return { color: "#38bdf8", weight: 3, opacity: 0.7 };
+  }
+  return { color: "#f43f5e", weight: 2, opacity: 0.8 };
 }
 
 function featureIcon(category: "hazard" | "attractor", kind: string) {
