@@ -41,6 +41,15 @@ export interface ZonePodEstimate {
   rationale: string;        // short operator-facing explanation
 }
 
+// Cumulative Koopman POD after `passes` complete sweeps at the estimate's
+// current ESW/spacing. Exposed so the zone card can compare `zone.pod`
+// against an expectation that reflects *how many sweeps have actually been
+// logged*, not just the one-pass floor.
+export function podAfterPasses(est: ZonePodEstimate, passes: number): number {
+  if (passes <= 0) return 0;
+  return calculatePOD(est.esw_m, est.spacing_m, passes);
+}
+
 // Zone terrain class → sensible default ground preset. For `mixed` we pick a
 // middle-of-the-road woodland value rather than optimistic open-field — if
 // the IC knows better they can override via the POD Calculator directly.
