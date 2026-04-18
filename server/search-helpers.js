@@ -25,10 +25,14 @@ async function overpass(query, timeoutMs = 25000) {
   // exceeded nginx's 60s proxy_read_timeout in dense urban polygons. With a
   // race, the total wait is ≤ timeoutMs regardless of how many mirrors hang.
   //
-  // One automatic retry after 800ms: every couple of weeks the public Overpass
-  // fleet hits a synchronised 504/429 window and all three mirrors fail inside
-  // the same second. A single short backoff catches that transient without
-  // materially extending the p99 wait (the retry still races all mirrors).
+  // Retry policy: one retry on transient failure. Backoff length depends on
+  // the failure mode —
+  //   • ≥1 mirror returning 429 → 5s backoff. The public fleet shares a rate-
+  //     limit bucket per-IP, so a tight retry just earns another 429. Longer
+  //     wait is cheaper than another round-trip.
+  //   • Otherwise (504, timeout, connection refused) → 800ms backoff. These
+  //     are usually a single bad mirror and the race should succeed without
+  //     it on the second try.
   if (!OVERPASS_ENDPOINTS.length) throw new Error('no overpass endpoints configured');
   const body = `data=${encodeURIComponent(query)}`;
   const hdrs = { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA };
@@ -39,15 +43,27 @@ async function overpass(query, timeoutMs = 25000) {
     );
     return Promise.any(attempts);
   };
+  const hostOf = (u) => { try { return new URL(u || '').host; } catch { return '?'; } };
+  const summarise = (aggErr) => (aggErr?.errors || []).map((x) => {
+    const s = x?.response?.status;
+    const host = hostOf(x?.config?.url);
+    if (s) return `${host}:${s}`;
+    if (x?.code === 'ECONNABORTED') return `${host}:timeout`;
+    return `${host}:${x?.code || x?.message || 'err'}`;
+  }).join(', ');
+  const sawStatus = (aggErr, code) =>
+    (aggErr?.errors || []).some((x) => x?.response?.status === code);
   try {
     return await raceOnce();
   } catch (e1) {
-    await new Promise((r) => setTimeout(r, 800));
+    const rateLimited = sawStatus(e1, 429);
+    if (rateLimited) console.warn(`[overpass] rate-limited on first attempt (${summarise(e1)}), backing off 5s`);
+    await new Promise((r) => setTimeout(r, rateLimited ? 5000 : 800));
     try {
       return await raceOnce();
     } catch (e2) {
-      const errs = (e2?.errors || []).map((x) => x?.message || String(x)).join('; ');
-      throw new Error(`all overpass mirrors failed after retry: ${errs || 'unknown'}`);
+      const tag = sawStatus(e2, 429) ? ' [rate-limited]' : '';
+      throw new Error(`all overpass mirrors failed after retry${tag}: ${summarise(e2) || 'unknown'}`);
     }
   }
 }
@@ -221,13 +237,15 @@ router.post('/osm/features', async (req, res) => {
     return null;
   };
 
+  // Overpass server-side timeout is 20s for these queries, axios gets 1s
+  // padding on top to distinguish network hiccup from true server timeout.
   const settle = async (ns, q) => {
     try {
       const r = await persistedOverpass(overpass, {
         key: bboxKey(ns, tiled),
         ttlMs: 30 * 60_000,
         query: q,
-        timeoutMs: 25_000,
+        timeoutMs: 21_000,
       });
       return r.source === 'stale'
         ? { ...r.value, _stale: true, _staleError: r.error }
@@ -305,7 +323,7 @@ router.post('/osm/terrain', async (req, res) => {
         key: bboxKey(ns, tiled),
         ttlMs: 30 * 60_000,
         query: q,
-        timeoutMs: 25_000,
+        timeoutMs: 26_000,
       });
       return r.source === 'stale'
         ? { ...r.value, _stale: true, _staleError: r.error }
@@ -465,7 +483,7 @@ router.post('/osm/rivers', async (req, res) => {
         key: bboxKey(ns, tiled),
         ttlMs: 30 * 60_000,
         query: q,
-        timeoutMs: 25_000,
+        timeoutMs: 26_000,
       });
       return r.source === 'stale'
         ? { ...r.value, _stale: true, _staleError: r.error }
