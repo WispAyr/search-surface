@@ -376,7 +376,11 @@ function ZoneDetail({
         const nextPass = podAfterPasses(est, passesForExpected + 1);
         const expectedPct = Math.round(expected * 100);
         const nextPct = Math.round(nextPass * 100);
-        const recordedPct = Math.round(zone.pod * 100);
+        // Compare against cumulative_pod — that's what the slider sets and what
+        // the server maintains Bayesian-combined across passes. zone.pod is the
+        // per-pass value that triggered the last combine and isn't the right
+        // thing to measure cumulative progress against.
+        const recordedPct = Math.round((zone.cumulative_pod || 0) * 100);
         const gap = recordedPct - expectedPct;
         const label = passesDone > 0
           ? `Expected after ${passesDone} pass${passesDone === 1 ? "" : "es"}`
@@ -399,7 +403,7 @@ function ZoneDetail({
               {recordedPct !== expectedPct && (
                 <button
                   type="button"
-                  onClick={() => handleUpdate({ pod: expected })}
+                  onClick={() => handleUpdate({ cumulative_pod: expected })}
                   disabled={updating}
                   className="text-[10px] text-accent hover:underline disabled:opacity-50"
                 >
