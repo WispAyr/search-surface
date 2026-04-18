@@ -95,6 +95,7 @@ db.exec(`
     to_callsign TEXT,
     message TEXT NOT NULL,
     type TEXT DEFAULT 'radio' CHECK(type IN ('radio','note','system')),
+    source_channel TEXT,
     created_at TEXT NOT NULL
   );
 
@@ -151,6 +152,11 @@ for (const col of [
 ]) {
   try { db.exec(`ALTER TABLE search_operations ADD COLUMN ${col}`); } catch { /* already present */ }
 }
+
+// Additive migration: source_channel on comms log (tracks which integration
+// a message came from for cross-channel routing and UI badging).
+try { db.exec(`ALTER TABLE search_comms_log ADD COLUMN source_channel TEXT`); } catch { /* already present */ }
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_scl_source ON search_comms_log(source_channel)`); } catch { /* ok */ }
 
 function uuid() { return crypto.randomUUID(); }
 function now() { return new Date().toISOString(); }
@@ -529,11 +535,11 @@ const comms = {
       .all(operationId, limit);
   },
 
-  add(operationId, { from_callsign, to_callsign, message, type }) {
+  add(operationId, { from_callsign, to_callsign, message, type, source_channel }) {
     db.prepare(`
-      INSERT INTO search_comms_log (operation_id, from_callsign, to_callsign, message, type, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(operationId, from_callsign || null, to_callsign || null, message, type || 'radio', now());
+      INSERT INTO search_comms_log (operation_id, from_callsign, to_callsign, message, type, source_channel, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(operationId, from_callsign || null, to_callsign || null, message, type || 'radio', source_channel || null, now());
     return this.list(operationId, 1)[0];
   },
 };

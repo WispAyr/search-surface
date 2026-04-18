@@ -238,15 +238,38 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
       <MapFlyToListener />
     </MapContainer>
 
-    {/* Setting datum banner */}
-    {settingDatum && (
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] px-4 py-2 bg-accent text-black rounded-lg text-sm font-medium shadow-lg animate-pulse">
-        Click the map to set the primary datum
+    {/* Top-of-map action bar. When the map is in a pick mode, we take over the
+        top-centre with a high-contrast banner + visible Cancel. When no primary
+        datum exists we show an empty-state CTA that activates primary-datum
+        mode directly — this is the single most common "how do I start?" blocker. */}
+    {(settingDatum || addingDatum) && (
+      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-2 px-3 py-2 bg-accent text-black rounded-lg text-xs md:text-sm font-semibold shadow-xl">
+        <span className="animate-pulse">●</span>
+        <span>
+          {settingDatum
+            ? "Click the map to place the primary datum (LKP)"
+            : "Click the map to drop a datum"}
+        </span>
+        <button
+          onClick={() => {
+            if (settingDatum) setSettingDatum(false);
+            if (addingDatum) setAddingDatum(false);
+          }}
+          className="ml-1 px-2 py-0.5 bg-black/20 hover:bg-black/30 rounded text-[11px] font-medium"
+        >
+          Cancel
+        </button>
       </div>
     )}
-    {addingDatum && (
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] px-4 py-2 bg-amber-500 text-black rounded-lg text-sm font-medium shadow-lg animate-pulse">
-        Click the map to drop a secondary datum
+    {!settingDatum && !addingDatum && !operation.datum_lat && !operation.datum_lon && (
+      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[900] flex items-center gap-2 px-3 py-2 bg-red-500/95 text-white rounded-lg text-xs md:text-sm font-semibold shadow-xl">
+        <span>No LKP yet — drop the last known position to begin.</span>
+        <button
+          onClick={() => setSettingDatum(true)}
+          className="px-2.5 py-1 bg-white text-red-600 rounded text-[11px] font-semibold hover:bg-white/90"
+        >
+          Drop LKP
+        </button>
       </div>
     )}
     </div>

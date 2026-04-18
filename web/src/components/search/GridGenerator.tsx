@@ -24,7 +24,7 @@ const GRID_TYPES = [
 ] as const;
 
 export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
-  const { toggleGridGenerator, setPreviewZones, gridDatumId, setGridDatumId } = useSearchStore();
+  const { toggleGridGenerator, setPreviewZones, gridDatumId, setGridDatumId, setSettingDatum } = useSearchStore();
   useEscapeKey(toggleGridGenerator);
   const [gridType, setGridType] = useState<string>("parallel");
   const [cellSize, setCellSize] = useState(500);
@@ -128,6 +128,13 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
     return () => setPreviewZones([]);
   }, [setPreviewZones]);
 
+  // Re-preview when the anchor datum changes so the polygons on the map
+  // follow the dropdown — avoids the "changed anchor, now blank" trap.
+  useEffect(() => {
+    if (preview.length > 0 && datum) handleGenerate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gridDatumId]);
+
   return (
     <div className="fixed bottom-4 left-4 right-4 md:right-auto z-[1000] md:w-[380px] max-h-[85vh] overflow-y-auto bg-surface-800 border border-surface-600 rounded-xl shadow-xl">
       <div className="flex items-center justify-between px-4 py-3 border-b border-surface-700">
@@ -150,8 +157,8 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
               onChange={(e) => {
                 const v = e.target.value;
                 setGridDatumId(v === "__primary__" ? null : v);
-                setPreview([]);
-                setPreviewZones([]);
+                // Preview auto-regenerates on anchor change (effect below) so
+                // the user doesn't lose their parameter tuning to a dropdown tap.
               }}
               className="w-full px-3 py-1.5 bg-surface-700 border border-surface-600 rounded text-sm"
             >
@@ -286,16 +293,16 @@ export function GridGenerator({ operation, onRefresh }: GridGeneratorProps) {
         )}
 
         {!datum && gridType !== "route_buffer" && (
-          <div className="p-2 bg-amber-600/10 border border-amber-600/20 rounded text-xs text-amber-300 space-y-2">
-            <p>No datum point set. Click below then click the map to place it.</p>
+          <div className="p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-300 space-y-2">
+            <p>A search grid needs an anchor. Drop a primary datum (LKP) first.</p>
             <button
               onClick={() => {
-                const { setSettingDatum } = useSearchStore.getState();
                 setSettingDatum(true);
+                toggleGridGenerator();
               }}
-              className="w-full py-2 bg-amber-600 text-white rounded text-xs font-medium hover:bg-amber-500 transition"
+              className="w-full py-2 bg-red-500 text-white rounded text-xs font-semibold hover:bg-red-400 transition"
             >
-              Set Datum on Map
+              Drop LKP on map
             </button>
           </div>
         )}

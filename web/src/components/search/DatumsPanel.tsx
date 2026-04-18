@@ -23,6 +23,8 @@ export function DatumsPanel({ operation, onRefresh }: DatumsPanelProps) {
   const {
     addingDatum,
     setAddingDatum,
+    settingDatum,
+    setSettingDatum,
     gridDatumId,
     setGridDatumId,
     pendingDatumPoint,
@@ -91,10 +93,19 @@ export function DatumsPanel({ operation, onRefresh }: DatumsPanelProps) {
         </button>
       </div>
 
-      {addingDatum && !pendingDatumPoint && (
-        <div className="p-2 bg-amber-600/10 border border-amber-600/30 rounded text-xs text-amber-300">
-          Click on the map to drop a datum…{" "}
-          <button onClick={() => setAddingDatum(false)} className="underline">cancel</button>
+      {(addingDatum || settingDatum) && !pendingDatumPoint && (
+        <div className="p-2 bg-amber-600/10 border border-amber-600/30 rounded text-xs text-amber-300 flex items-center justify-between gap-2">
+          <span>
+            {settingDatum
+              ? "Click the map to set the primary datum (LKP)…"
+              : "Click on the map to drop a datum…"}
+          </span>
+          <button
+            onClick={() => { setAddingDatum(false); setSettingDatum(false); }}
+            className="underline shrink-0"
+          >
+            cancel
+          </button>
         </div>
       )}
 
@@ -159,8 +170,15 @@ export function DatumsPanel({ operation, onRefresh }: DatumsPanelProps) {
           lon={operation.datum_lon}
         />
       ) : (
-        <div className="p-2 bg-surface-800/60 border border-dashed border-surface-600 rounded text-xs text-fg-4">
-          No primary datum set. Use the datum button in the header to place one.
+        <div className="p-3 bg-red-500/5 border border-dashed border-red-500/40 rounded space-y-2">
+          <p className="text-xs text-red-300 font-medium">No primary datum (LKP) set.</p>
+          <p className="text-[11px] text-fg-4">The LKP anchors search patterns, SAR rings, and team assignments. Drop it first.</p>
+          <button
+            onClick={() => setSettingDatum(true)}
+            className="w-full py-1.5 bg-red-500 hover:bg-red-400 text-white rounded text-xs font-semibold transition"
+          >
+            Drop LKP on map
+          </button>
         </div>
       )}
 

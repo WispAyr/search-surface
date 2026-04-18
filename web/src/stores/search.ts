@@ -207,12 +207,26 @@ export const useSearchStore = create<SearchState>((set) => ({
   togglePODCalculator: () => set((s) => ({ showPODCalculator: !s.showPODCalculator })),
   toggleExportPanel: () => set((s) => ({ showExportPanel: !s.showExportPanel })),
   toggleSitrepPanel: () => set((s) => ({ showSitrepPanel: !s.showSitrepPanel })),
-  setSettingDatum: (v) => set({ settingDatum: v }),
+  // Pick modes are mutually exclusive — turning one on cancels the other and
+  // clears any in-flight pending point so the map never ends up in a
+  // confusing "both active" state. Only the *enabling* path enforces this;
+  // turning a mode off leaves the others alone.
+  setSettingDatum: (v) =>
+    set((s) =>
+      v
+        ? { settingDatum: true, addingDatum: false, pendingDatumPoint: null }
+        : { settingDatum: false }
+    ),
   toggleAirspace: () => set((s) => ({ showAirspace: !s.showAirspace })),
   setRightPanel: (panel) => set({ rightPanel: panel }),
   setPreviewZones: (zones) => set({ previewZones: zones }),
   setMobilePanelOpen: (v) => set({ mobilePanelOpen: v }),
-  setAddingDatum: (v) => set({ addingDatum: v }),
+  setAddingDatum: (v) =>
+    set((s) =>
+      v
+        ? { addingDatum: true, settingDatum: false, pendingDatumPoint: null }
+        : { addingDatum: false }
+    ),
   setPendingDatumPoint: (p) => set({ pendingDatumPoint: p }),
   setGridDatumId: (id) => set({ gridDatumId: id }),
   toggleSarTools: () => set((s) => ({ showSarTools: !s.showSarTools })),
