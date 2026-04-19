@@ -1,8 +1,42 @@
-# Self-hosted Overpass — deferred build plan
+# Self-hosted Overpass — Scotland mirror
 
-Written 2026-04-18. **Status: deferred.** We just shipped persistent SQLite
-cache + `/osm/stats` telemetry; giving it at least one IC session of real
-traffic before committing to a self-hosted mirror.
+Written 2026-04-18 as a deferred plan. **Triggered and executing 2026-04-19**:
+all three public mirrors (overpass-api.de, kumi.systems, private.coffee) were
+returning 504 / timeout concurrently during a live IC session — the exact
+failure mode the trigger criteria below anticipated.
+
+## Execution log (2026-04-19)
+
+- `osm-3s_v0.7.62.11` compiled native at `/srv/overpass/install` (BUILD_OK).
+- Scotland extract (318 MB PBF) already in `/srv/overpass/scotland-latest.osm.pbf`.
+- DB init uses `osmium cat … -o - -f osm | update_database --db-dir=/srv/overpass/db/
+  --compression-method=gz --map-compression-method=gz` (pipe direct rather
+  than via `init_osm3s.sh`, which wants `.bz2` XML).
+- **First attempt crashed the disk at 100%** — `--meta` + no-compression
+  produced a 37GB partial DB for Scotland before failing on File_Error. The
+  10–15GB estimate in the original plan was wrong; that was only true with
+  compression. Second attempt (current): drop `--meta`, add both
+  `--compression-method=gz` flags. Expected size ~8–12GB.
+- Replication diffs still work without meta; we just lose per-feature
+  author/timestamp fields, which SAR never reads.
+- **Live 2026-04-19 01:02 BST.** First `/osm/stats` after cutover:
+  `mirror_wins: { "127.0.0.1:12345": 3 }`, `latency_live.p95: 395 ms`
+  (vs. 29.5 s on public mirrors immediately before). Search Ops is no
+  longer bottlenecked on public Overpass.
+- `dispatcher Type=forking` in the unit file hung during activation even
+  though the binary daemonises; switched to `Type=simple` and it came up
+  clean. Kept in the unit for future maintainers.
+- Minutely replication not wired yet — DB is a static Geofabrik snapshot
+  from 2026-04-18. Good enough for SAR for weeks; add `fetch_osc.sh` +
+  `apply_osc_to_db.sh` unit later if freshness matters.
+- systemd units: `overpass-dispatcher.service`, `fcgiwrap-overpass.{service,socket}`.
+  fcgiwrap runs as `pmsvc` (not www-data) so it can `connect()` to the
+  dispatcher socket in `/srv/overpass/db`.
+- nginx local vhost: `127.0.0.1:12345/api/*` → fcgiwrap → `/srv/overpass/install/cgi-bin/*`.
+- `OVERPASS_URLS` env var in `server/.env` (not source change): puts local
+  mirror first, public mirrors as fallback.
+
+## Original rationale (kept for future similar decisions)
 
 ## Why defer
 
