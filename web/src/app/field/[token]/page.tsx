@@ -9,12 +9,14 @@
 import { useEffect, useState, useRef, use } from "react";
 import dynamic from "next/dynamic";
 import type { SearchStreetItem, SearchTeam } from "@/types/search";
-import { Check, Truck, MapPin, AlertTriangle, RefreshCw, Navigation } from "lucide-react";
+import { Check, Truck, MapPin, AlertTriangle, RefreshCw } from "lucide-react";
 import { enqueue, drain } from "@/lib/offline-queue";
 import { OfflineBar } from "./OfflineBar";
+import { FieldActionBar } from "./FieldActionBar";
+import { ReportSheet, type QuickReportType } from "./ReportSheet";
 
 // Leaflet must load client-side only.
-const RouteMap = dynamic(() => import("./RouteMap").then((m) => m.RouteMap), {
+const ZoneMap = dynamic(() => import("./ZoneMap").then((m) => m.ZoneMap), {
   ssr: false,
 });
 
@@ -29,7 +31,13 @@ interface FieldContext {
     datum_lat: number | null;
     datum_lon: number | null;
   };
-  assigned_zones: Array<{ id: string; name: string; status: string; notes?: string | null }>;
+  assigned_zones: Array<{
+    id: string;
+    name: string;
+    status: string;
+    notes?: string | null;
+    geometry?: GeoJSON.Feature | GeoJSON.Geometry | null;
+  }>;
   street_checklist: SearchStreetItem[];
   vehicle_route: {
     geometry: GeoJSON.LineString;
@@ -48,7 +56,12 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
   const [ctx, setCtx] = useState<FieldContext | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<Set<string>>(new Set());
+  const [toast, setToast] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [lastFix, setLastFix] = useState<[number, number] | null>(null);
   const mountedRef = useRef(true);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -103,12 +116,16 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
     return () => clearInterval(id);
   }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Flash toast for 3 s.
+  function flash(kind: "ok" | "err", msg: string) {
+    setToast({ kind, msg });
+    setTimeout(() => { if (mountedRef.current) setToast(null); }, 3000);
+  }
+
   async function toggleStreet(streetName: string, nextCleared: boolean) {
     if (!ctx) return;
     setPending((p) => new Set(p).add(streetName));
     const nowIso = new Date().toISOString();
-    // Optimistic update — persisted in the cached context so a reload mid-offline
-    // still shows the driver's ticks.
     setCtx((c) => {
       if (!c) return c;
       const next = {
@@ -122,9 +139,6 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
       try { localStorage.setItem(ctxKey, JSON.stringify(next)); } catch {}
       return next;
     });
-    // All writes route through the offline outbox; it sends immediately when
-    // online and queues when not. Coalesced on (team, street) so rapid toggles
-    // don't stack up.
     await enqueue({
       kind: "street",
       url: `/api/search/teams/${ctx.team.id}/streets/${encodeURIComponent(streetName)}?token=${encodeURIComponent(token)}`,
@@ -136,38 +150,54 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
     setPending((p) => { const n = new Set(p); n.delete(streetName); return n; });
   }
 
-  // Shared checkin implementation. `silent` mode suppresses alerts and the
-  // follow-up reload — used by the auto-checkin interval to avoid spamming
-  // the driver with popups or refreshing state they might be reading.
-  async function doCheckin({ silent }: { silent: boolean }) {
-    if (!ctx) return;
-    if (!("geolocation" in navigator)) {
-      if (!silent) alert("Location not supported on this device");
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        await enqueue({
-          kind: "checkin",
-          url: `/api/search/field/checkin?token=${encodeURIComponent(token)}`,
-          method: "POST",
-          body: { lat: pos.coords.latitude, lon: pos.coords.longitude },
-          client_ts: new Date().toISOString(),
-          // One pending check-in is enough — coalesce auto-pings into the latest fix.
-          dedup: `checkin:${token}`,
-        });
-        if (!silent) await load();
-      },
-      (err) => { if (!silent) alert(`Location error: ${err.message}`); },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: silent ? 60000 : 0 },
-    );
+  // Promise-wrapped geolocation so the action flows can await a fresh fix
+  // before posting. iOS triggers the permission prompt on the *first* call;
+  // subsequent calls reuse the grant.
+  function getPosition(): Promise<GeolocationPosition> {
+    return new Promise((resolve, reject) => {
+      if (!("geolocation" in navigator)) {
+        reject(new Error("Location not supported on this device"));
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      });
+    });
   }
 
-  async function checkin() { await doCheckin({ silent: false }); }
+  async function doCheckin({ silent }: { silent: boolean }) {
+    if (!ctx) return;
+    try {
+      const pos = await getPosition();
+      setLastFix([pos.coords.latitude, pos.coords.longitude]);
+      await enqueue({
+        kind: "checkin",
+        url: `/api/search/field/checkin?token=${encodeURIComponent(token)}`,
+        method: "POST",
+        body: { lat: pos.coords.latitude, lon: pos.coords.longitude },
+        client_ts: new Date().toISOString(),
+        dedup: `checkin:${token}`,
+      });
+      if (!silent) {
+        flash("ok", "Position sent");
+        await load();
+      }
+    } catch (err) {
+      if (!silent) flash("err", err instanceof Error ? err.message : String(err));
+    }
+  }
 
-  // Auto-checkin while deployed. Uses a ref to avoid missing state from the
-  // interval closure, and fires once on mount (after context loads) so the
-  // first ping lands promptly even if the team just became deployed.
+  async function handleCheckin() {
+    setBusy(true);
+    await doCheckin({ silent: false });
+    setBusy(false);
+  }
+
+  // Auto-checkin while deployed. This also triggers the iOS permission prompt
+  // the first time the team becomes deployed — before this refactor the prompt
+  // only appeared if the driver tapped check-in, which a lot of them never do.
   useEffect(() => {
     if (!ctx) return;
     const deployed = ctx.team.status === "deployed" || ctx.team.status === "returning";
@@ -176,6 +206,104 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
     const id = setInterval(() => doCheckin({ silent: true }), AUTO_CHECKIN_MS);
     return () => clearInterval(id);
   }, [ctx?.team.status, ctx?.team.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Photo upload — iOS only surfaces the camera permission dialog when the
+  // user taps a file input with capture="environment", so we keep the input
+  // hidden and trigger it from the Photo button.
+  async function onPhotoPicked(file: File) {
+    if (!ctx) return;
+    setBusy(true);
+    let lat: number | null = null;
+    let lon: number | null = null;
+    try {
+      const pos = await getPosition();
+      lat = pos.coords.latitude;
+      lon = pos.coords.longitude;
+      setLastFix([lat, lon]);
+    } catch { /* Photos without GPS are still useful; submit anyway. */ }
+    try {
+      const form = new FormData();
+      form.append("photo", file);
+      if (lat !== null) form.append("lat", String(lat));
+      if (lon !== null) form.append("lon", String(lon));
+      const zoneId = ctx.assigned_zones[0]?.id;
+      if (zoneId) form.append("zone_id", zoneId);
+      form.append("description", `Field photo from ${ctx.team.callsign || ctx.team.name}`);
+      const r = await fetch(`/api/search/field/photo?token=${encodeURIComponent(token)}`, {
+        method: "POST",
+        body: form,
+      });
+      if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+      flash("ok", "Photo sent");
+      await load();
+    } catch (e) {
+      flash("err", e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitReport(data: { type: QuickReportType; description: string; severity: "info" | "warn" | "urgent" }) {
+    if (!ctx) throw new Error("No team context");
+    let lat: number | null = lastFix?.[0] ?? null;
+    let lon: number | null = lastFix?.[1] ?? null;
+    try {
+      const pos = await getPosition();
+      lat = pos.coords.latitude;
+      lon = pos.coords.longitude;
+      setLastFix([lat, lon]);
+    } catch { /* Report without fresh GPS is still sent; location can be null. */ }
+    const zoneId = ctx.assigned_zones[0]?.id;
+    const nowIso = new Date().toISOString();
+    await enqueue({
+      kind: "report",
+      url: `/api/search/field/report?token=${encodeURIComponent(token)}`,
+      method: "POST",
+      body: {
+        type: data.type,
+        description: data.description,
+        severity: data.severity,
+        lat,
+        lon,
+        zone_id: zoneId || null,
+      },
+      client_ts: nowIso,
+    });
+    flash("ok", "Report queued");
+    await load();
+  }
+
+  async function handleSOS() {
+    if (!ctx) return;
+    const ok = window.confirm("Send SOS alert to controller? This escalates to critical.");
+    if (!ok) return;
+    setBusy(true);
+    let lat: number | null = lastFix?.[0] ?? null;
+    let lon: number | null = lastFix?.[1] ?? null;
+    try {
+      const pos = await getPosition();
+      lat = pos.coords.latitude;
+      lon = pos.coords.longitude;
+      setLastFix([lat, lon]);
+    } catch { /* Still send SOS even without GPS. */ }
+    await enqueue({
+      kind: "report",
+      url: `/api/search/field/report?token=${encodeURIComponent(token)}`,
+      method: "POST",
+      body: {
+        type: "assist",
+        severity: "critical",
+        description: `SOS from ${ctx.team.callsign || ctx.team.name}`,
+        lat,
+        lon,
+        zone_id: ctx.assigned_zones[0]?.id || null,
+      },
+      client_ts: new Date().toISOString(),
+    });
+    flash("ok", "SOS sent");
+    setBusy(false);
+    await load();
+  }
 
   if (error && !ctx) {
     return (
@@ -208,31 +336,30 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
   const pct = total > 0 ? Math.round((cleared / total) * 100) : 0;
   const zone = ctx.assigned_zones[0] || null;
   const isVehicle = (ctx.team.capability || "").toLowerCase().includes("vehicle");
+  const teamPosition: [number, number] | null =
+    lastFix || (ctx.team.last_lat != null && ctx.team.last_lon != null
+      ? [ctx.team.last_lat, ctx.team.last_lon]
+      : null);
+  const datum: [number, number] | null =
+    ctx.operation.datum_lat != null && ctx.operation.datum_lon != null
+      ? [ctx.operation.datum_lat, ctx.operation.datum_lon]
+      : null;
 
   return (
-    <div className="min-h-screen bg-surface-900 text-fg-1 pb-24">
+    <div className="min-h-screen bg-surface-900 text-fg-1" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 80px)" }}>
       {/* Sticky header */}
-      <header className="sticky top-0 z-10 bg-surface-900/95 backdrop-blur border-b border-surface-700">
+      <header className="sticky top-0 z-20 bg-surface-900/95 backdrop-blur border-b border-surface-700">
         <div className="px-4 py-3">
-          <div className="flex items-center justify-between">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                {isVehicle ? <Truck size={16} className="text-accent" /> : <MapPin size={16} className="text-accent" />}
-                <h1 className="font-semibold truncate">{ctx.team.callsign || ctx.team.name}</h1>
-              </div>
-              <p className="text-xs text-fg-4 truncate">{ctx.operation.name}</p>
-            </div>
-            <button
-              onClick={checkin}
-              className="shrink-0 px-3 py-1.5 text-xs bg-surface-700 hover:bg-surface-600 rounded inline-flex items-center gap-1"
-              title="Share current position"
-            >
-              <Navigation size={12} /> Check-in
-            </button>
+          <div className="flex items-center gap-2 min-w-0">
+            {isVehicle ? <Truck size={16} className="text-accent" /> : <MapPin size={16} className="text-accent" />}
+            <h1 className="font-semibold truncate">{ctx.team.callsign || ctx.team.name}</h1>
+            <span className="text-[10px] uppercase tracking-wider text-fg-4 px-1.5 py-0.5 border border-surface-700 rounded">
+              {ctx.team.status}
+            </span>
           </div>
+          <p className="text-xs text-fg-4 truncate mt-0.5">{ctx.operation.name}</p>
         </div>
         <OfflineBar />
-        {/* Progress strip */}
         {total > 0 && (
           <div className="px-4 pb-3">
             <div className="flex items-center justify-between text-[11px] text-fg-4 mb-1">
@@ -240,10 +367,7 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
               <span className="font-mono">{cleared}/{total} · {pct}%</span>
             </div>
             <div className="h-1.5 bg-surface-700 rounded overflow-hidden">
-              <div
-                className="h-full bg-emerald-500 transition-all"
-                style={{ width: `${pct}%` }}
-              />
+              <div className="h-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
             </div>
           </div>
         )}
@@ -255,24 +379,27 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
           <div className="p-4 bg-surface-800 border border-surface-700 rounded text-sm text-fg-3">
             <p className="font-medium mb-1">Standing by</p>
             <p className="text-fg-4 text-xs">
-              Waiting for the controller to assign you to a zone. This page refreshes
-              automatically.
+              Waiting for the controller to assign you to a zone. This page refreshes automatically.
             </p>
           </div>
         )}
 
-        {/* Vehicle route (if present) */}
-        {isVehicle && ctx.vehicle_route && (
+        {/* Map — always on when there's a zone or route to show. */}
+        {(zone?.geometry || ctx.vehicle_route || datum) && (
           <section>
             <h2 className="text-[10px] uppercase tracking-wide text-fg-4 mb-2">
-              Driving route{ctx.vehicle_route.meta ? ` — ${(ctx.vehicle_route.meta.distance_m / 1000).toFixed(1)} km · ${Math.round(ctx.vehicle_route.meta.duration_s / 60)} min` : ""}
+              {ctx.vehicle_route?.meta
+                ? `Driving route — ${(ctx.vehicle_route.meta.distance_m / 1000).toFixed(1)} km · ${Math.round(ctx.vehicle_route.meta.duration_s / 60)} min`
+                : zone
+                  ? `Zone: ${zone.name}`
+                  : "Area"}
             </h2>
-            <div className="h-56 rounded overflow-hidden border border-surface-700">
-              <RouteMap
-                geometry={ctx.vehicle_route.geometry}
-                datum={ctx.operation.datum_lat != null && ctx.operation.datum_lon != null
-                  ? [ctx.operation.datum_lat, ctx.operation.datum_lon]
-                  : null}
+            <div className="h-64 rounded overflow-hidden border border-surface-700">
+              <ZoneMap
+                zoneGeometry={zone?.geometry || null}
+                route={isVehicle ? ctx.vehicle_route?.geometry || null : null}
+                datum={datum}
+                teamPosition={teamPosition}
               />
             </div>
           </section>
@@ -294,16 +421,12 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
                       onClick={() => toggleStreet(s.name, !isCleared)}
                       disabled={isPending}
                       className={`w-full flex items-center gap-3 px-3 py-3 text-left transition ${
-                        isCleared
-                          ? "bg-emerald-500/10 hover:bg-emerald-500/15"
-                          : "bg-surface-800 hover:bg-surface-700"
+                        isCleared ? "bg-emerald-500/10 hover:bg-emerald-500/15" : "bg-surface-800 hover:bg-surface-700"
                       } ${isPending ? "opacity-60" : ""}`}
                     >
                       <span
                         className={`shrink-0 w-6 h-6 rounded border flex items-center justify-center ${
-                          isCleared
-                            ? "bg-emerald-500 border-emerald-500"
-                            : "border-surface-500 bg-surface-900"
+                          isCleared ? "bg-emerald-500 border-emerald-500" : "border-surface-500 bg-surface-900"
                         }`}
                       >
                         {isCleared && <Check size={14} className="text-black" />}
@@ -331,13 +454,57 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
           <div className="p-4 bg-surface-800 border border-surface-700 rounded text-sm text-fg-3">
             <p className="font-medium mb-1">Generating checklist…</p>
             <p className="text-fg-4 text-xs">
-              Streets in <span className="text-fg-2">{zone.name}</span> are being
-              pulled from OSM. This usually takes 5-20s. The page will refresh
-              automatically.
+              Streets in <span className="text-fg-2">{zone.name}</span> are being pulled from OSM.
+              This usually takes 5-20s. The page will refresh automatically.
             </p>
           </div>
         )}
       </div>
+
+      {/* Hidden file input — triggered by the Photo action. capture="environment"
+          cues iOS/Android to open the rear camera directly instead of the photo
+          library picker. User can still tap "Photo Library" if they want an
+          existing shot. */}
+      <input
+        ref={photoInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) onPhotoPicked(f);
+          e.currentTarget.value = "";
+        }}
+        className="hidden"
+      />
+
+      {/* Toast */}
+      {toast && (
+        <div
+          className={`fixed left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full text-xs font-medium shadow-lg ${
+            toast.kind === "ok" ? "bg-emerald-600 text-white" : "bg-red-600 text-white"
+          }`}
+          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + 80px)" }}
+        >
+          {toast.msg}
+        </div>
+      )}
+
+      {/* Report sheet */}
+      <ReportSheet
+        open={reportOpen}
+        onClose={() => setReportOpen(false)}
+        onSubmit={submitReport}
+      />
+
+      {/* Bottom action bar — fixed, home-indicator safe */}
+      <FieldActionBar
+        onCheckin={handleCheckin}
+        onPhoto={() => photoInputRef.current?.click()}
+        onReport={() => setReportOpen(true)}
+        onSOS={handleSOS}
+        pending={busy}
+      />
     </div>
   );
 }
