@@ -23,7 +23,7 @@ import { AlarmBar } from "./AlarmBar";
 import { ConditionsStrip } from "./ConditionsStrip";
 import { ZelloPanel } from "../ZelloPanel";
 import { MapLayerPanel } from "./MapLayerPanel";
-import { PanelRightOpen, Map as MapIcon, Layers, Box } from "lucide-react";
+import { PanelRightOpen, Map as MapIcon, Layers, Box, ChevronRight, ChevronLeft } from "lucide-react";
 
 const SearchMap = dynamic(() => import("./SearchMap").then((m) => m.SearchMap), {
   ssr: false,
@@ -59,6 +59,22 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
 
   useSearchStream(operationId);
   const { refresh } = useSearchOperation(operationId);
+
+  // Desktop-only side-panel collapse. Mobile uses mobilePanelOpen instead.
+  const [sidePanelCollapsed, setSidePanelCollapsed] = useState(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("search:sidePanelCollapsed");
+      if (raw === "1") setSidePanelCollapsed(true);
+    } catch {}
+  }, []);
+  const toggleSidePanel = () => {
+    setSidePanelCollapsed((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("search:sidePanelCollapsed", next ? "1" : "0"); } catch {}
+      return next;
+    });
+  };
 
   // Hydrate per-user map preferences on first mount. Cheap GET; the store
   // handles auth failure + fallback silently.
@@ -143,9 +159,10 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
             />
           )}
 
-          {/* Map controls — 3D toggle + layers panel opener. Top-right, above
-              both Leaflet and MapLibre's own z-index so they're always visible. */}
-          <div className="absolute top-3 right-3 z-[1040] flex items-center gap-1.5">
+          {/* Map controls — 3D toggle + layers panel opener. Top-LEFT so they
+              don't collide with the side-panel hide tab on the right edge.
+              z-[1040] sits above Leaflet and MapLibre's native controls. */}
+          <div className="absolute top-3 left-3 z-[1040] flex items-center gap-1.5">
             <button
               onClick={() => updateMapPrefs({ show_3d: !mapPrefs.show_3d })}
               className={`px-2.5 py-1.5 rounded-md text-[11px] font-semibold shadow-lg backdrop-blur border transition ${
@@ -185,11 +202,37 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
           >
             <PanelRightOpen size={18} />
           </button>
+
+          {/* Desktop-only edge tab — toggles the side panel. Lives in the map
+              container (not the panel itself) because the panel has overflow-hidden
+              which clips anything sticking out of it. */}
+          <button
+            onClick={toggleSidePanel}
+            className="hidden md:flex absolute top-1/2 -translate-y-1/2 right-0 z-[1050] items-center gap-1 bg-surface-800/95 backdrop-blur border border-r-0 border-surface-600 text-fg-2 hover:text-fg-1 rounded-l-md pl-2 pr-1.5 py-3 shadow-lg"
+            aria-label={sidePanelCollapsed ? "Show operation panel" : "Hide operation panel"}
+            title={sidePanelCollapsed ? "Show operation panel" : "Hide operation panel"}
+          >
+            {sidePanelCollapsed ? (
+              <>
+                <ChevronLeft size={16} />
+                <span className="text-[10px] font-semibold uppercase tracking-wider [writing-mode:vertical-rl] rotate-180">
+                  Panel
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="text-[10px] font-semibold uppercase tracking-wider [writing-mode:vertical-rl]">
+                  Hide
+                </span>
+                <ChevronRight size={16} />
+              </>
+            )}
+          </button>
         </div>
 
         {/* Right panel — desktop sidebar / mobile overlay drawer */}
         <div
-          className={`${mobilePanelOpen ? "flex" : "hidden"} md:flex absolute md:relative inset-0 md:inset-auto w-full md:w-[420px] md:border-l border-surface-700 flex-col overflow-hidden z-[1100] md:z-[1000] bg-surface-900`}
+          className={`${mobilePanelOpen ? "flex" : "hidden"} ${sidePanelCollapsed ? "md:hidden" : "md:flex"} absolute md:relative inset-0 md:inset-auto w-full md:w-[420px] md:border-l border-surface-700 flex-col overflow-hidden z-[1100] md:z-[1000] bg-surface-900`}
         >
           {/* Panel tabs — horizontal scroll on narrow widths to avoid cramming */}
           <div className="flex border-b border-surface-700 text-xs overflow-x-auto scrollbar-thin">

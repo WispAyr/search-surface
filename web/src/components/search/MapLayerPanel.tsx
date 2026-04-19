@@ -13,7 +13,7 @@ export function MapLayerPanel() {
   const { mapPrefs, updateMapPrefs, setShowMapLayerPanel } = useSearchStore();
 
   return (
-    <div className="absolute top-12 right-3 z-[1050] w-72 bg-surface-800/95 backdrop-blur border border-surface-600 rounded-lg shadow-2xl text-fg-1">
+    <div className="absolute top-12 left-3 z-[1050] w-72 bg-surface-800/95 backdrop-blur border border-surface-600 rounded-lg shadow-2xl text-fg-1">
       <div className="flex items-center justify-between px-3 py-2 border-b border-surface-700">
         <div className="text-xs font-semibold uppercase tracking-wider text-fg-3">Map preferences</div>
         <button

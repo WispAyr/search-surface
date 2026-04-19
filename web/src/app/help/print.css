@@ -1,0 +1,155 @@
+/* ─── Print-tuned stylesheet for /help ─── */
+
+/* On screen, keep things subdued */
+.help-doc {
+  background: var(--s-900);
+}
+
+/* Anchors should land below sticky header */
+.help-doc .section {
+  scroll-margin-top: 80px;
+}
+
+/* ─── Print media ─── */
+@media print {
+  @page {
+    size: A4;
+    margin: 20mm;
+  }
+
+  @page :first {
+    margin-top: 18mm;
+  }
+
+  /* Page number in running footer */
+  @page {
+    @bottom-right {
+      content: counter(page) " / " counter(pages);
+      font-family: 'Inter', sans-serif;
+      font-size: 9pt;
+      color: #666;
+    }
+    @bottom-left {
+      content: "Search Ops · Operator's Guide";
+      font-family: 'Inter', sans-serif;
+      font-size: 9pt;
+      color: #666;
+    }
+  }
+
+  /* Force light-mode colors for print — save ink */
+  html, body, .help-doc {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    color-scheme: light !important;
+  }
+
+  /* Paint all foreground tokens dark */
+  .help-doc .text-fg,
+  .help-doc .text-fg-2 {
+    color: #111827 !important;
+  }
+  .help-doc .text-fg-3 {
+    color: #374151 !important;
+  }
+  .help-doc .text-fg-4,
+  .help-doc .text-fg-5 {
+    color: #6b7280 !important;
+  }
+  .help-doc .text-accent {
+    color: #0891b2 !important;
+  }
+
+  /* Backgrounds: white out cards so ink doesn't burn */
+  .help-doc .bg-surface-900,
+  .help-doc .bg-surface-800,
+  .help-doc .bg-surface-700 {
+    background: #ffffff !important;
+  }
+  .help-doc .border-line,
+  .help-doc .border-line-subtle {
+    border-color: #d1d5db !important;
+  }
+
+  /* Callouts: keep tint but print-safe */
+  .help-doc .callout {
+    background: #f9fafb !important;
+    border-color: #d1d5db !important;
+  }
+
+  /* Hide anything tagged no-print (toolbar, back links) */
+  .no-print { display: none !important; }
+
+  /* Keep the article flush to the page edges */
+  .help-doc article {
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Print anchor URLs after each external link */
+  .help-doc a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 9pt;
+    color: #6b7280;
+    word-break: break-all;
+  }
+
+  /* Don't tear sections across pages when avoidable */
+  .help-doc .section {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .help-doc h1, .help-doc h2, .help-doc h3 {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  .help-doc table {
+    page-break-inside: auto;
+    break-inside: auto;
+  }
+  .help-doc tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Cover page on its own sheet */
+  .help-doc .cover {
+    min-height: calc(100vh - 40mm);
+    page-break-after: always;
+    break-after: page;
+  }
+
+  /* TOC on its own sheet */
+  .help-doc .toc.page-break-after {
+    page-break-after: always;
+    break-after: page;
+  }
+
+  /* Keep each pattern diagram with its caption */
+  .help-doc .pattern-block {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Tool blocks paired with heading */
+  .help-doc .tool-block {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Invert SVG diagram lines to print-safe darker cyan */
+  .help-doc svg [stroke="#00d4ff"] {
+    stroke: #0891b2 !important;
+  }
+  .help-doc svg [fill="#00d4ff"] {
+    fill: #0891b2 !important;
+  }
+
+  /* Transparent scrollbars etc */
+  *, *::before, *::after {
+    transition: none !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+}
