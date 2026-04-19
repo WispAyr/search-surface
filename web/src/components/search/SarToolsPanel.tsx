@@ -240,9 +240,17 @@ export function SarToolsPanel({ operation }: Props) {
 
   async function loadStreets() {
     const zone = selectedZone;
-    if (!zone?.geometry) return;
+    if (!zone?.geometry) {
+      setStreetError("Selected zone has no geometry — can't query OSM.");
+      setStreetsQueried(true);
+      return;
+    }
     const coords = extractPolygon(zone.geometry);
-    if (!coords) return;
+    if (!coords || coords.length < 3) {
+      setStreetError(`Couldn't extract a polygon from this zone's geometry (got ${coords?.length || 0} points). Zone type may be unsupported.`);
+      setStreetsQueried(true);
+      return;
+    }
     setLoadingStreets(true);
     setStreetError(null);
     setStreetsQueried(false);
