@@ -25,7 +25,9 @@ export function SarToolsPanel({ operation }: Props) {
     travelMinutes, setTravelMinutes,
     showHazards, setShowHazards,
     showAttractors, setShowAttractors,
-    hazards, attractors, setOsmFeatures,
+    showCoastline, setShowCoastline,
+    showLse, setShowLse,
+    hazards, attractors, coastlines, lse, setOsmFeatures,
     vehicleRoute, vehicleRouteMeta, setVehicleRoute,
     selectedZoneId,
     gridDatumId, setGridDatumId,
@@ -76,9 +78,19 @@ export function SarToolsPanel({ operation }: Props) {
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (!parsed || Date.now() - (parsed.savedAt || 0) > HAZARD_CACHE_TTL_MS) return;
-      setOsmFeatures(parsed.hazards || [], parsed.attractors || [], parsed.hazard_lines || []);
+      setOsmFeatures({
+        hazards: parsed.hazards || [],
+        attractors: parsed.attractors || [],
+        hazardLines: parsed.hazard_lines || [],
+        coastlines: parsed.coastlines || [],
+        lse: parsed.lse || [],
+      });
       setShowHazards(true);
       setShowAttractors(true);
+      // Auto-show coastline/LSE only if the cached payload actually had them —
+      // avoids adding noise to inland incidents that rehydrate pre-coast data.
+      if ((parsed.coastlines || []).length) setShowCoastline(true);
+      if ((parsed.lse || []).length) setShowLse(true);
     } catch { /* ignore corrupt cache */ }
     // setShow* are stable store actions — deliberately excluded from deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -94,13 +106,22 @@ export function SarToolsPanel({ operation }: Props) {
     const bbox: [number, number, number, number] = [datumLat - r, datumLon - r * 1.6, datumLat + r, datumLon + r * 1.6];
     try {
       const d = await searchHelpers.osmFeatures(bbox);
-      setOsmFeatures(d.hazards, d.attractors, d.hazard_lines);
+      setOsmFeatures({
+        hazards: d.hazards,
+        attractors: d.attractors,
+        hazardLines: d.hazard_lines,
+        coastlines: d.coastlines,
+        lse: d.lse,
+      });
       setShowHazards(true);
       setShowAttractors(true);
+      if (d.coastlines.length) setShowCoastline(true);
+      if (d.lse.length) setShowLse(true);
       try {
         const key = hazardCacheKey(operation.id, datumLat, datumLon);
         localStorage.setItem(key, JSON.stringify({
           hazards: d.hazards, hazard_lines: d.hazard_lines, attractors: d.attractors,
+          coastlines: d.coastlines, lse: d.lse,
           savedAt: Date.now(),
         }));
       } catch { /* quota exceeded — non-fatal */ }
@@ -293,7 +314,7 @@ export function SarToolsPanel({ operation }: Props) {
         >
           {busy === "hazards" ? "Loading…" : `Scan 5 km around ${anchorLabel}`}
         </button>
-        {hazards.length > 0 && (
+        {(hazards.length > 0 || coastlines.length > 0 || lse.length > 0) && (
           <div className="mt-2 space-y-1">
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={showHazards} onChange={(e) => setShowHazards(e.target.checked)} />
@@ -302,6 +323,14 @@ export function SarToolsPanel({ operation }: Props) {
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={showAttractors} onChange={(e) => setShowAttractors(e.target.checked)} />
               <span className="text-emerald-400">Attractors ({attractors.length})</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={showCoastline} onChange={(e) => setShowCoastline(e.target.checked)} />
+              <span className="text-sky-400">Coastline ({coastlines.length})</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={showLse} onChange={(e) => setShowLse(e.target.checked)} />
+              <span className="text-amber-400">Life-saving kit ({lse.length})</span>
             </label>
           </div>
         )}

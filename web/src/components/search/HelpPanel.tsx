@@ -211,28 +211,41 @@ const SECTIONS: Section[] = [
     body: (
       <div className="space-y-4">
         <p className="p-2 rounded bg-warn/10 border border-warn/20 text-fg-2 text-xs">
-          These features are in active design — not yet live. Don't plan an incident around them.
+          Most items below are in active design — not yet live. Don't plan an incident around them.
+          Two overlays are <strong className="text-emerald-400">partially live</strong> and flagged below.
         </p>
         <div className="flex gap-3 items-start">
           <Waves size={18} className="shrink-0 mt-0.5 text-accent" />
           <div>
-            <div className="font-semibold text-fg-1">Coastline sweep zones</div>
+            <div className="font-semibold text-fg-1">
+              Coastline sweep zones{" "}
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 align-middle">shoreline overlay live</span>
+            </div>
             <p className="text-fg-3 text-sm">
-              Click two headlands; the app pulls the OSM coastline between them and drops a
-              corridor zone with ±100m offshore and ±50m inland buffers. Sweep timing uses walk
-              speed × length, and the current tide phase is overlaid so the IC can see whether
-              the window is flooding (cutoff risk) or ebbing (max strand exposure).
+              <strong>Live:</strong> toggle "Coastline" in SAR tools — the shoreline draws as a blue
+              polyline near your incident so the IC can see what's water-edge. Fetched from the
+              self-hosted Scotland OSM mirror (same endpoint as hazards/attractors).
+            </p>
+            <p className="text-fg-3 text-sm mt-1">
+              <strong>Still in design:</strong> click two headlands to drop a corridor zone with
+              ±100m offshore and ±50m inland buffers; sweep timing from walk speed × length;
+              current tide phase overlay (flooding = cutoff risk, ebbing = max strand exposure).
             </p>
           </div>
         </div>
         <div className="flex gap-3 items-start">
           <LifeBuoy size={18} className="shrink-0 mt-0.5 text-warn" />
           <div>
-            <div className="font-semibold text-fg-1">Life-saving equipment</div>
+            <div className="font-semibold text-fg-1">
+              Life-saving equipment{" "}
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 align-middle">live</span>
+            </div>
             <p className="text-fg-3 text-sm">
-              Public lifebuoys, rescue boards, throw lines (OSM <code>emergency=life_ring</code>
-              and <code>rescue_equipment=*</code>) overlaid on the map near the shoreline. Teams
-              can see what's already on site before committing kit.
+              <strong>Live:</strong> public lifebuoys, rescue stations, lifeguard towers/bases,
+              rescue boxes, emergency phones and miscellaneous <code>rescue_equipment=*</code>
+              (throw lines, rescue boards) render as amber markers when you scan hazards around
+              the datum — or when the "Life-saving kit" toggle is on in SAR tools. Teams can see
+              what's already on site before committing kit. OSM-sourced; accuracy is volunteer-mapped.
             </p>
           </div>
         </div>

@@ -69,9 +69,13 @@ interface SearchState {
   travelMinutes: number;           // minutes elapsed since LKP (for isochrones)
   showHazards: boolean;
   showAttractors: boolean;
+  showCoastline: boolean;
+  showLse: boolean;
   hazards: Array<{ kind: string; name: string; lat: number; lon: number }>;
   hazardLines: Array<{ kind: string; name: string; coords: Array<[number, number]> }>;
   attractors: Array<{ kind: string; name: string; lat: number; lon: number }>;
+  coastlines: Array<{ kind: string; name: string; coords: Array<[number, number]> }>;
+  lse: Array<{ kind: string; name: string; lat: number; lon: number }>;
   hazardsHint: string | null;
   vehicleRoute: GeoJSON.LineString | null;
   vehicleRouteMeta: { distance_m: number; duration_s: number } | null;
@@ -133,7 +137,15 @@ interface SearchState {
   setTravelMinutes: (m: number) => void;
   setShowHazards: (v: boolean) => void;
   setShowAttractors: (v: boolean) => void;
-  setOsmFeatures: (h: SearchState["hazards"], a: SearchState["attractors"], lines?: SearchState["hazardLines"]) => void;
+  setShowCoastline: (v: boolean) => void;
+  setShowLse: (v: boolean) => void;
+  setOsmFeatures: (f: {
+    hazards: SearchState["hazards"];
+    attractors: SearchState["attractors"];
+    hazardLines?: SearchState["hazardLines"];
+    coastlines?: SearchState["coastlines"];
+    lse?: SearchState["lse"];
+  }) => void;
   setHazardsHint: (h: string | null) => void;
   setVehicleRoute: (g: GeoJSON.LineString | null, meta: SearchState["vehicleRouteMeta"]) => void;
   dismissAlarm: (id: string) => void;
@@ -175,9 +187,13 @@ export const useSearchStore = create<SearchState>((set) => ({
   travelMinutes: 60,
   showHazards: false,
   showAttractors: false,
+  showCoastline: false,
+  showLse: false,
   hazards: [],
   hazardLines: [],
   attractors: [],
+  coastlines: [],
+  lse: [],
   hazardsHint: null,
   vehicleRoute: null,
   vehicleRouteMeta: null,
@@ -268,7 +284,15 @@ export const useSearchStore = create<SearchState>((set) => ({
   setTravelMinutes: (m) => set({ travelMinutes: m }),
   setShowHazards: (v) => set({ showHazards: v }),
   setShowAttractors: (v) => set({ showAttractors: v }),
-  setOsmFeatures: (hazards, attractors, hazardLines) => set({ hazards, attractors, hazardLines: hazardLines || [] }),
+  setShowCoastline: (v) => set({ showCoastline: v }),
+  setShowLse: (v) => set({ showLse: v }),
+  setOsmFeatures: (f) => set({
+    hazards: f.hazards,
+    attractors: f.attractors,
+    hazardLines: f.hazardLines || [],
+    coastlines: f.coastlines || [],
+    lse: f.lse || [],
+  }),
   setHazardsHint: (h) => set({ hazardsHint: h }),
   setVehicleRoute: (g, meta) => set({ vehicleRoute: g, vehicleRouteMeta: meta }),
   dismissAlarm: (id) =>

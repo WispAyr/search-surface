@@ -22,8 +22,8 @@ export function SarOverlays({ datumLat, datumLon }: Props) {
   const {
     subjectProfileId, showLpbRings,
     travelModes, travelMinutes,
-    showHazards, showAttractors,
-    hazards, hazardLines, attractors,
+    showHazards, showAttractors, showCoastline, showLse,
+    hazards, hazardLines, attractors, coastlines, lse,
     vehicleRoute,
   } = useSearchStore();
 
@@ -126,6 +126,35 @@ export function SarOverlays({ datumLat, datumLon }: Props) {
         </Marker>
       ))}
 
+      {/* ── Coastline (shoreline sweep awareness) ── */}
+      {showCoastline && coastlines.map((c, i) => (
+        <Polyline
+          key={`cl-${i}`}
+          positions={c.coords}
+          pathOptions={{ color: "#0ea5e9", weight: 3, opacity: 0.85 }}
+        >
+          <Popup>
+            <strong>Coastline</strong><br />
+            {c.name || "(unnamed)"}
+            <br /><span className="text-xs">Corridor-sweep zones coming soon — for now, use this as a shoreline reference.</span>
+          </Popup>
+        </Polyline>
+      ))}
+
+      {/* ── Life-saving equipment ── */}
+      {showLse && lse.map((e, i) => (
+        <Marker
+          key={`lse-${i}`}
+          position={[e.lat, e.lon]}
+          icon={lseIcon(e.kind)}
+        >
+          <Popup>
+            <strong>🛟 {lseLabel(e.kind)}</strong><br />
+            {e.name || "(unnamed)"}
+          </Popup>
+        </Marker>
+      ))}
+
       {/* ── Vehicle route ── */}
       {vehicleRoute && (
         <GeoJSON
@@ -145,6 +174,35 @@ function hazardLineStyle(kind: string): L.PathOptions {
     return { color: "#38bdf8", weight: 3, opacity: 0.7 };
   }
   return { color: "#f43f5e", weight: 2, opacity: 0.8 };
+}
+
+function lseLabel(kind: string): string {
+  if (kind === "life_ring") return "Life ring";
+  if (kind === "lifeguard_tower") return "Lifeguard tower";
+  if (kind === "lifeguard_base") return "Lifeguard base";
+  if (kind === "rescue_station") return "Rescue station";
+  if (kind === "rescue_box") return "Rescue box";
+  if (kind === "emergency_phone") return "Emergency phone";
+  if (kind.startsWith("rescue_")) return `Rescue kit (${kind.slice(7).replace(/_/g, " ")})`;
+  return kind;
+}
+
+function lseIcon(kind: string) {
+  // Amber circle with a glyph — distinct from the square hazard/attractor pins
+  // so life-saving kit reads as its own layer at a glance.
+  const glyph =
+    kind === "life_ring" ? "◯" :
+    kind === "lifeguard_tower" || kind === "lifeguard_base" ? "L" :
+    kind === "rescue_station" ? "R" :
+    kind === "rescue_box" ? "▣" :
+    kind === "emergency_phone" ? "☎" :
+    "+";
+  return L.divIcon({
+    html: `<div style="width:16px;height:16px;background:#f59e0b;border:2px solid white;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;color:#422006;font-weight:bold;box-shadow:0 0 6px rgba(245,158,11,0.6)">${glyph}</div>`,
+    className: "",
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
 }
 
 function featureIcon(category: "hazard" | "attractor", kind: string) {

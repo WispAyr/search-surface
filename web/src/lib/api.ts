@@ -200,6 +200,8 @@ export const searchHelpers = {
       hazards: Array<{ kind: string; name: string; lat: number; lon: number }>;
       hazard_lines: Array<{ kind: string; name: string; coords: Array<[number, number]> }>;
       attractors: Array<{ kind: string; name: string; lat: number; lon: number }>;
+      coastlines: Array<{ kind: string; name: string; coords: Array<[number, number]> }>;
+      lse: Array<{ kind: string; name: string; lat: number; lon: number }>;
     }>("/search/osm/features", {
       method: "POST",
       body: JSON.stringify({ bbox }),

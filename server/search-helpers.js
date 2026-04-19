@@ -210,13 +210,19 @@ router.post('/osm/features', async (req, res) => {
   const [s, w, n, e] = tiled;
   const a = `(${s},${w},${n},${e})`;
 
-  // Three queries:
+  // Five queries (cached independently so coastal bboxes don't re-hit the ones
+  // that only moved the viewport):
   //  • linesQ: linear hazards with full geometry (`out geom`) so the client
   //    can render them as polylines. Per-node icons made the Ayr-Prestwick
   //    rail line look like a cluster of disconnected pins.
   //  • pointsQ: areal / point hazards that are fine as a single center marker
   //    (cliffs, quarries, mineshafts).
   //  • attractorsQ: unchanged — all point-renderable.
+  //  • coastQ: natural=coastline ways. Empty away from the sea; cheap on a
+  //    self-hosted Scotland mirror so we always ask. Client decides whether
+  //    to render (showCoastline toggle).
+  //  • lseQ: life-saving equipment — life rings, throw lines, rescue boards,
+  //    lifeguard towers and stations. Mostly coastal but also on rivers/lochs.
   // Dropped: natural=water (too many polygons in urban areas), shop=* (too many nodes).
   const linesQ = `[out:json][timeout:20];
     (
@@ -238,6 +244,21 @@ router.post('/osm/features', async (req, res) => {
       way["leisure"~"park|nature_reserve"]${a};
     );
     out center tags 400;`;
+  const coastQ = `[out:json][timeout:20];
+    way["natural"="coastline"]${a};
+    out geom 200;`;
+  // `out body` (not `out tags`) keeps node lat/lon — the classifier needs both.
+  const lseQ = `[out:json][timeout:20];
+    (
+      node["emergency"="life_ring"]${a};
+      node["emergency"="lifeguard_tower"]${a};
+      node["emergency"="lifeguard_base"]${a};
+      node["emergency"="rescue_station"]${a};
+      node["emergency"="rescue_box"]${a};
+      node["emergency"="phone"]${a};
+      node["rescue_equipment"]${a};
+    );
+    out body 400;`;
 
   const classifyPoint = (el) => {
     const t = el.tags || {};
@@ -266,6 +287,32 @@ router.post('/osm/features', async (req, res) => {
     if (!kind) return null;
     return { kind, name, coords };
   };
+  const classifyCoast = (el) => {
+    const t = el.tags || {};
+    const geom = Array.isArray(el.geometry) ? el.geometry : null;
+    if (!geom || geom.length < 2) return null;
+    const coords = geom.map((g) => [g.lat, g.lon]).filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    if (coords.length < 2) return null;
+    return { kind: 'coastline', name: t.name || '', coords };
+  };
+  const classifyLse = (el) => {
+    const t = el.tags || {};
+    const lat = el.lat ?? el.center?.lat;
+    const lon = el.lon ?? el.center?.lon;
+    if (!lat || !lon) return null;
+    let kind = null;
+    if (t.emergency === 'life_ring') kind = 'life_ring';
+    else if (t.emergency === 'lifeguard_tower') kind = 'lifeguard_tower';
+    else if (t.emergency === 'lifeguard_base') kind = 'lifeguard_base';
+    else if (t.emergency === 'rescue_station') kind = 'rescue_station';
+    else if (t.emergency === 'rescue_box') kind = 'rescue_box';
+    else if (t.emergency === 'phone') kind = 'emergency_phone';
+    else if (t.rescue_equipment) kind = `rescue_${String(t.rescue_equipment).toLowerCase()}`;
+    if (!kind) return null;
+    // Name-or-operator lets IC see "RNLI Troon lifeguard base" vs "(unnamed)".
+    const name = t.name || t.operator || '';
+    return { kind, name, lat, lon };
+  };
 
   // Overpass server-side timeout is 20s for these queries, axios gets 1s
   // padding on top to distinguish network hiccup from true server timeout.
@@ -283,18 +330,22 @@ router.post('/osm/features', async (req, res) => {
         : r.value;
     } catch (e) { return { _error: e.message, elements: [] }; }
   };
-  const [ln, pt, at] = await Promise.all([
+  const [ln, pt, at, co, ls] = await Promise.all([
     settle('feat:hl', linesQ),
     settle('feat:hp', pointsQ),
     settle('feat:at', attractorsQ),
+    settle('feat:cl', coastQ),
+    settle('feat:lse', lseQ),
   ]);
-  const hazards = [], hazardLines = [], attractors = [];
+  const hazards = [], hazardLines = [], attractors = [], coastlines = [], lse = [];
   for (const el of ln.elements || []) { const c = classifyLine(el); if (c) hazardLines.push(c); }
   for (const el of pt.elements || []) { const c = classifyPoint(el); if (c?._cat === 'hazard') { delete c._cat; hazards.push(c); } }
   for (const el of at.elements || []) { const c = classifyPoint(el); if (c?._cat === 'attractor') { delete c._cat; attractors.push(c); } }
-  const errors = [ln._error, pt._error, at._error].filter(Boolean);
-  const stale = Boolean(ln._stale || pt._stale || at._stale);
-  res.json({ hazards, hazard_lines: hazardLines, attractors, partial: errors.length > 0, errors, stale });
+  for (const el of co.elements || []) { const c = classifyCoast(el); if (c) coastlines.push(c); }
+  for (const el of ls.elements || []) { const c = classifyLse(el); if (c) lse.push(c); }
+  const errors = [ln._error, pt._error, at._error, co._error, ls._error].filter(Boolean);
+  const stale = Boolean(ln._stale || pt._stale || at._stale || co._stale || ls._stale);
+  res.json({ hazards, hazard_lines: hazardLines, attractors, coastlines, lse, partial: errors.length > 0, errors, stale });
 });
 
 // ── Terrain polygons for smart-grid classification ──

@@ -198,12 +198,14 @@ export function MarketingLanding() {
             <FeatureCard
               icon={<Waves size={18} />}
               title="Coastline sweep zones"
-              body="Click two headlands, pull OSM coastline between them, auto-generate a corridor zone with tide-aware timing. For beach and cliff-base searches where a polygon is the wrong shape."
+              badge="Overlay live"
+              body="Live now: shoreline polyline overlays your incident area (toggle in SAR tools). Shipping next: click two headlands to auto-generate a corridor zone with tide-aware timing. For beach and cliff-base searches where a polygon is the wrong shape."
             />
             <FeatureCard
               icon={<LifeBuoy size={18} />}
               title="Life-saving equipment"
-              body="Public lifebuoys, rescue boards and throw lines overlaid on shoreline maps. Teams know what's already on site before they commit kit."
+              badge="Live"
+              body="Public lifebuoys, rescue stations, lifeguard towers/bases, emergency phones and throw lines overlay the map near the shoreline. Teams know what's already on site before they commit kit."
             />
             <FeatureCard
               icon={<Truck size={18} />}
@@ -453,14 +455,31 @@ function LogoMark({ small = false }: { small?: boolean }) {
   );
 }
 
-function FeatureCard({ icon, title, body }: { icon: React.ReactNode; title: string; body: string }) {
+function FeatureCard({
+  icon,
+  title,
+  body,
+  badge,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  body: string;
+  badge?: string;
+}) {
   return (
     <div className="group relative rounded-2xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0))] p-6 backdrop-blur-sm overflow-hidden transition hover:border-accent/30">
       <div className="absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-white/20 to-transparent opacity-60" />
       <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition duration-500 bg-[radial-gradient(400px_150px_at_50%_0%,rgba(0,212,255,0.12),transparent_70%)]" />
       <div className="relative">
-        <div className="inline-flex w-10 h-10 items-center justify-center rounded-lg bg-gradient-to-br from-accent/20 to-accent/5 border border-accent/20 text-accent mb-4">
-          {icon}
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="inline-flex w-10 h-10 items-center justify-center rounded-lg bg-gradient-to-br from-accent/20 to-accent/5 border border-accent/20 text-accent">
+            {icon}
+          </div>
+          {badge && (
+            <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 whitespace-nowrap">
+              {badge}
+            </span>
+          )}
         </div>
         <h3 className="text-[15px] font-medium mb-2 tracking-tight">{title}</h3>
         <p className="text-sm text-fg-3 leading-relaxed">{body}</p>

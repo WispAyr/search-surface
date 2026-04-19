@@ -747,11 +747,11 @@ function RiverCorridorOverlay({ operation }: { operation: SearchOperation }) {
 
 function HazardsAutoLoader() {
   const map = useMap();
-  const { showHazards, showAttractors, setOsmFeatures, setHazardsHint } = useSearchStore();
+  const { showHazards, showAttractors, showCoastline, showLse, setOsmFeatures, setHazardsHint } = useSearchStore();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastKeyRef = useRef<string>("");
 
-  const active = showHazards || showAttractors;
+  const active = showHazards || showAttractors || showCoastline || showLse;
 
   useEffect(() => {
     if (!active) {
@@ -783,7 +783,13 @@ function HazardsAutoLoader() {
       setHazardsHint("Loading…");
       try {
         const d = await searchHelpers.osmFeatures([south, west, north, east]);
-        setOsmFeatures(d.hazards, d.attractors, d.hazard_lines);
+        setOsmFeatures({
+          hazards: d.hazards,
+          attractors: d.attractors,
+          hazardLines: d.hazard_lines,
+          coastlines: d.coastlines,
+          lse: d.lse,
+        });
         setHazardsHint(null);
       } catch (e) {
         setHazardsHint("Hazard fetch failed");
