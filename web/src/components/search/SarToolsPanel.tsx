@@ -143,6 +143,7 @@ export function SarToolsPanel({ operation }: Props) {
   const [streets, setStreets] = useState<Array<{ name: string; count: number }>>([]);
   const [loadingStreets, setLoadingStreets] = useState(false);
   const [streetError, setStreetError] = useState<string | null>(null);
+  const [streetsQueried, setStreetsQueried] = useState(false);
   const [w3w, setW3w] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -244,9 +245,11 @@ export function SarToolsPanel({ operation }: Props) {
     if (!coords) return;
     setLoadingStreets(true);
     setStreetError(null);
+    setStreetsQueried(false);
     try {
       const d = await searchHelpers.osmStreets(coords);
       setStreets(d.streets);
+      setStreetsQueried(true);
     } catch (e) {
       const msg = (e as Error).message || "";
       const isTimeout = /504|timeout|gateway/i.test(msg);
@@ -574,6 +577,11 @@ export function SarToolsPanel({ operation }: Props) {
               {loadingStreets ? "Querying OSM… (up to ~30s for dense zones)" : `List streets in "${selectedZone.name}"`}
             </button>
             {streetError && <div className="mt-1 text-rose-400">{streetError}</div>}
+            {streetsQueried && streets.length === 0 && !streetError && (
+              <div className="mt-2 px-2 py-1.5 rounded border border-surface-700 bg-surface-900 text-fg-4 text-[11px]">
+                No named streets in "{selectedZone.name}" — likely open ground (moor, farmland, coast).
+              </div>
+            )}
             {streets.length > 0 && (
               <>
                 <div className="mt-2 max-h-40 overflow-y-auto border border-surface-600 rounded p-2 font-mono text-[10px]">
