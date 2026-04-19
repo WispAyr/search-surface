@@ -9,7 +9,7 @@
 import { useEffect, useState, useRef, use } from "react";
 import dynamic from "next/dynamic";
 import type { SearchStreetItem, SearchTeam } from "@/types/search";
-import { Check, Truck, MapPin, AlertTriangle, RefreshCw } from "lucide-react";
+import { Check, Truck, MapPin, AlertTriangle, RefreshCw, Crosshair } from "lucide-react";
 import { enqueue, drain } from "@/lib/offline-queue";
 import { OfflineBar } from "./OfflineBar";
 import { FieldActionBar } from "./FieldActionBar";
@@ -60,6 +60,12 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
   const [busy, setBusy] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [lastFix, setLastFix] = useState<[number, number] | null>(null);
+  const [lastFixAt, setLastFixAt] = useState<number | null>(null);
+  // "unknown" = haven't tried; "ok" = last attempt succeeded; "denied" = permission
+  // denied (unrecoverable without user action); "unavailable" = GPS off or no fix
+  // in time. Tracked separately from toast because silent auto-checkin failures
+  // shouldn't spam the driver but SHOULD surface in the status pill.
+  const [gpsStatus, setGpsStatus] = useState<"unknown" | "ok" | "denied" | "unavailable">("unknown");
   const mountedRef = useRef(true);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -156,14 +162,34 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
   function getPosition(): Promise<GeolocationPosition> {
     return new Promise((resolve, reject) => {
       if (!("geolocation" in navigator)) {
+        setGpsStatus("unavailable");
         reject(new Error("Location not supported on this device"));
         return;
       }
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: true,
-        timeout: 15000,
-        maximumAge: 0,
-      });
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          if (mountedRef.current) {
+            setGpsStatus("ok");
+            setLastFix([pos.coords.latitude, pos.coords.longitude]);
+            setLastFixAt(Date.now());
+          }
+          resolve(pos);
+        },
+        (err) => {
+          if (mountedRef.current) {
+            // PERMISSION_DENIED=1 is distinct from POSITION_UNAVAILABLE=2 /
+            // TIMEOUT=3 — denial needs a different CTA (open browser settings)
+            // vs "try again" / "go outside".
+            setGpsStatus(err.code === err.PERMISSION_DENIED ? "denied" : "unavailable");
+          }
+          reject(err);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 0,
+        }
+      );
     });
   }
 
@@ -171,7 +197,6 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
     if (!ctx) return;
     try {
       const pos = await getPosition();
-      setLastFix([pos.coords.latitude, pos.coords.longitude]);
       await enqueue({
         kind: "checkin",
         url: `/api/search/field/checkin?token=${encodeURIComponent(token)}`,
@@ -185,7 +210,12 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
         await load();
       }
     } catch (err) {
-      if (!silent) flash("err", err instanceof Error ? err.message : String(err));
+      // Surface the error whether manual or silent — silent auto-checkin
+      // failures still need a toast the first time so the driver knows
+      // GPS is off. The status pill then carries the ongoing signal.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!silent) flash("err", msg);
+      else if (gpsStatus !== "denied" && gpsStatus !== "unavailable") flash("err", `GPS: ${msg}`);
     }
   }
 
@@ -219,7 +249,6 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
       const pos = await getPosition();
       lat = pos.coords.latitude;
       lon = pos.coords.longitude;
-      setLastFix([lat, lon]);
     } catch { /* Photos without GPS are still useful; submit anyway. */ }
     try {
       const form = new FormData();
@@ -251,7 +280,6 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
       const pos = await getPosition();
       lat = pos.coords.latitude;
       lon = pos.coords.longitude;
-      setLastFix([lat, lon]);
     } catch { /* Report without fresh GPS is still sent; location can be null. */ }
     const zoneId = ctx.assigned_zones[0]?.id;
     const nowIso = new Date().toISOString();
@@ -284,7 +312,6 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
       const pos = await getPosition();
       lat = pos.coords.latitude;
       lon = pos.coords.longitude;
-      setLastFix([lat, lon]);
     } catch { /* Still send SOS even without GPS. */ }
     await enqueue({
       kind: "report",
@@ -360,6 +387,7 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
           <p className="text-xs text-fg-4 truncate mt-0.5">{ctx.operation.name}</p>
         </div>
         <OfflineBar />
+        <GpsStatusPill status={gpsStatus} lastFixAt={lastFixAt} />
         {total > 0 && (
           <div className="px-4 pb-3">
             <div className="flex items-center justify-between text-[11px] text-fg-4 mb-1">
@@ -505,6 +533,41 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
         onSOS={handleSOS}
         pending={busy}
       />
+    </div>
+  );
+}
+
+// GPS status pill. Intentionally *not* rendered when status is "ok" and we
+// have a recent fix — silence is the default so the driver's attention goes
+// to the map. Only appears when something needs action or acknowledgement.
+function GpsStatusPill({ status, lastFixAt }: { status: "unknown" | "ok" | "denied" | "unavailable"; lastFixAt: number | null }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (status === "unknown") return null;
+  const stale = status === "ok" && lastFixAt != null && now - lastFixAt > 10 * 60 * 1000;
+  if (status === "ok" && !stale) return null;
+
+  let bg = "bg-amber-500/15 border-amber-500/40 text-amber-200";
+  let label = "";
+  if (status === "denied") {
+    bg = "bg-red-500/15 border-red-500/40 text-red-200";
+    label = "GPS denied — enable location for this site in browser settings";
+  } else if (status === "unavailable") {
+    bg = "bg-red-500/15 border-red-500/40 text-red-200";
+    label = "No GPS fix — go outside / check device location";
+  } else if (stale && lastFixAt != null) {
+    const mins = Math.round((now - lastFixAt) / 60000);
+    label = `GPS fix ${mins}min old`;
+  }
+
+  return (
+    <div className={`mx-4 mt-2 px-3 py-1.5 border rounded text-[11px] font-medium inline-flex items-center gap-2 ${bg}`}>
+      <Crosshair size={12} />
+      <span>{label}</span>
     </div>
   );
 }

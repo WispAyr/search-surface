@@ -181,8 +181,21 @@ export function ZoneStatusBoard({ operation, onRefresh }: { operation: SearchOpe
                       <Users size={10} />
                       <span style={{ color: team.color }}>{team.name}</span>
                       <span className="text-fg-4">({team.callsign})</span>
+                      {/* Assignment build-in-flight. The server fires
+                          buildTeamAssignment via setImmediate after a PATCH to
+                          zone.assigned_team_id; until it writes back we see the
+                          team assigned here but its assigned_zone_id still lags
+                          — show a spinner so the controller doesn't think it's
+                          stuck. Flips off when the SSE team_assigned event
+                          lands with the updated assigned_zone_id. */}
+                      {team.assigned_zone_id !== z.id && (
+                        <span className="ml-auto flex items-center gap-1 text-[10px] text-amber-300">
+                          <Loader2 size={10} className="animate-spin" />
+                          Building route…
+                        </span>
+                      )}
                       {/* Street-clear progress — populated async after assignment */}
-                      {team.street_checklist && team.street_checklist.length > 0 && (() => {
+                      {team.assigned_zone_id === z.id && team.street_checklist && team.street_checklist.length > 0 && (() => {
                         const done = team.street_checklist.filter((s) => s.cleared_at).length;
                         const total = team.street_checklist.length;
                         const pct = total > 0 ? Math.round((done / total) * 100) : 0;

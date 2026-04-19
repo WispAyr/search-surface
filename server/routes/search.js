@@ -50,13 +50,23 @@ function guardOperationId(req, res, operationId) {
 // Pull an outer ring out of a zone geometry (Polygon or MultiPolygon, and the
 // server stores GeoJSON [lon,lat] while OSM helpers expect [lat,lon]).
 function zoneOuterRing(geom) {
-  const g = geom?.geometry || geom;
-  if (!g?.type || !g.coordinates) return null;
+  const g = asGeometry(geom);
+  if (!g) return null;
   let ring = null;
   if (g.type === 'Polygon') ring = g.coordinates[0];
   else if (g.type === 'MultiPolygon') ring = g.coordinates[0]?.[0];
   if (!Array.isArray(ring)) return null;
   return ring.map(([lon, lat]) => [lat, lon]);
+}
+
+// Normalise a stored zone geometry to a bare GeoJSON Geometry regardless of
+// whether it was serialised as a Feature wrapper ({type:'Feature', geometry})
+// or as a flat Geometry ({type:'Polygon', coordinates}). Exports used to only
+// match the Feature shape, silently dropping flat-stored zones.
+function asGeometry(geom) {
+  const g = geom?.geometry || geom;
+  if (!g?.type || !g.coordinates) return null;
+  return g;
 }
 
 // Fire-and-forget: when a team gets assigned to a zone, build a street checklist
@@ -789,20 +799,30 @@ router.get('/operations/:id/export/geojson', requireTenant, (req, res) => {
   const op = operations.get(req.params.id);
   if (!op) return res.status(404).json({ error: 'Operation not found' });
 
-  const features = op.zones.map(z => ({
-    ...z.geometry,
-    properties: {
-      ...((z.geometry && z.geometry.properties) || {}),
-      zone_id: z.id,
-      name: z.name,
-      status: z.status,
-      priority: z.priority,
-      pod: z.pod,
-      cumulative_pod: z.cumulative_pod,
-      search_method: z.search_method,
-      assigned_team: op.teams.find(t => t.id === z.assigned_team_id)?.name || null,
-    },
-  }));
+  // Always emit proper Features regardless of whether zone.geometry was
+  // serialised as a Feature wrapper or a flat Geometry in the DB.
+  const features = op.zones
+    .map((z) => {
+      const g = asGeometry(z.geometry);
+      if (!g) return null;
+      const wrappedProps = (z.geometry && z.geometry.type === 'Feature' && z.geometry.properties) || {};
+      return {
+        type: 'Feature',
+        geometry: g,
+        properties: {
+          ...wrappedProps,
+          zone_id: z.id,
+          name: z.name,
+          status: z.status,
+          priority: z.priority,
+          pod: z.pod,
+          cumulative_pod: z.cumulative_pod,
+          search_method: z.search_method,
+          assigned_team: op.teams.find((t) => t.id === z.assigned_team_id)?.name || null,
+        },
+      };
+    })
+    .filter(Boolean);
 
   // Add team positions
   for (const t of op.teams) {
@@ -894,13 +914,20 @@ router.get('/operations/:id/export/kml', requireTenant, (req, res) => {
     kml += `<Placemark><name>Datum</name><Point><coordinates>${op.datum_lon},${op.datum_lat},0</coordinates></Point></Placemark>\n`;
   }
 
-  // Zones
+  // Zones — accept both Feature-wrapped and flat-Geometry storage shapes.
   kml += '<Folder><name>Zones</name>\n';
   for (const z of op.zones) {
-    if (z.geometry?.geometry?.type === 'Polygon' && z.geometry.geometry.coordinates?.[0]) {
-      const coords = z.geometry.geometry.coordinates[0].map(c => `${c[0]},${c[1]},0`).join(' ');
+    const g = asGeometry(z.geometry);
+    if (!g) continue;
+    let rings = [];
+    if (g.type === 'Polygon' && g.coordinates?.[0]) rings = [g.coordinates[0]];
+    else if (g.type === 'MultiPolygon') rings = g.coordinates.map((p) => p?.[0]).filter(Boolean);
+    if (rings.length === 0) continue;
+    const desc = `Method: ${z.search_method}, POD: ${Math.round(z.cumulative_pod * 100)}%, Priority: ${z.priority}`;
+    for (const ring of rings) {
+      const coords = ring.map((c) => `${c[0]},${c[1]},0`).join(' ');
       kml += `<Placemark><name>${escapeXml(z.name)}</name><styleUrl>#zone-${z.status}</styleUrl>
-<description>Method: ${z.search_method}, POD: ${Math.round(z.cumulative_pod * 100)}%, Priority: ${z.priority}</description>
+<description>${escapeXml(desc)}</description>
 <Polygon><outerBoundaryIs><LinearRing><coordinates>${coords}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>\n`;
     }
   }
@@ -1024,8 +1051,13 @@ function escapeXml(str) {
 }
 
 function getPolygonCentroid(feature) {
-  if (!feature?.geometry?.coordinates?.[0]) return null;
-  const coords = feature.geometry.type === 'Polygon' ? feature.geometry.coordinates[0] : null;
+  const g = asGeometry(feature);
+  if (!g) return null;
+  const coords = g.type === 'Polygon'
+    ? g.coordinates[0]
+    : g.type === 'MultiPolygon'
+      ? g.coordinates[0]?.[0]
+      : null;
   if (!coords || coords.length === 0) return null;
   const sumLon = coords.reduce((s, c) => s + c[0], 0);
   const sumLat = coords.reduce((s, c) => s + c[1], 0);
