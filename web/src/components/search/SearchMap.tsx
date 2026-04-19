@@ -255,6 +255,7 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
       <FitBounds operation={operation} />
       <InvalidateSizeOnResize trigger={mobilePanelOpen} />
       <MapFlyToListener />
+      {mapPrefs.show_street_lens && <StreetLensMouseHandler />}
     </MapContainer>
 
     {/* Top-of-map action bar. When the map is in a pick mode, we take over the
@@ -311,6 +312,29 @@ function DatumClickHandler({ onSet }: { onSet: (lat: number, lon: number) => voi
       onSet(e.latlng.lat, e.latlng.lng);
     },
   });
+  return null;
+}
+
+/** Debounced mousemove → store.streetLensPoint. Only runs when the lens is
+ *  enabled (component is conditionally mounted from SearchMap). */
+function StreetLensMouseHandler() {
+  const setStreetLensPoint = useSearchStore((s) => s.setStreetLensPoint);
+  const timer = useRef<number | null>(null);
+  useMapEvents({
+    mousemove(e) {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => {
+        setStreetLensPoint([e.latlng.lat, e.latlng.lng]);
+      }, 180);
+    },
+    mouseout() {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+      setStreetLensPoint(null);
+    },
+  });
+  useEffect(() => () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+  }, []);
   return null;
 }
 

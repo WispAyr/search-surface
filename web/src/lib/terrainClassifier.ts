@@ -55,19 +55,29 @@ export interface TerrainFeatures {
   partial?: boolean;
 }
 
-// River half-widths in metres. Conservative (smaller than the channel looks
-// on the map) so we don't falsely flood dry cells.
+// River half-widths in metres. Bumped 2026-04-19 — 15m under-counted the
+// tidal River Ayr and similar estuary-adjacent channels, leaving visibly wet
+// cells classified as land.
 const RIVER_HALF_WIDTH_M: Record<string, number> = {
-  river: 15,
-  canal: 15,
-  stream: 5,
+  river: 25,
+  canal: 20,
+  stream: 6,
   drain: 3,
   ditch: 2,
 };
 
-// Coastline inland buffer — covers the wet strip that isn't in a natural=water
-// polygon (e.g. Scottish sea lochs mapped only as coastline).
-const COASTLINE_BUFFER_M = 100;
+// Coastline INLAND buffer (symmetric) — a thin strip for the intertidal/wet
+// band immediately adjacent to the coastline itself. The big seaward fill is
+// handled by seawardStrips() below, which uses OSM's land-on-left convention
+// to paint the sea side only (so this buffer can stay narrow without leaving
+// offshore cells undetected).
+const COASTLINE_BUFFER_M = 80;
+
+// Seaward strip width — coastlines get extended this far to the RIGHT of
+// their direction of travel (per OSM convention: land on left, sea on right).
+// 4 km covers a typical grid cell offshore; still small enough that concave
+// bays self-overlap sensibly rather than creating bow-tie polygons.
+const COASTLINE_SEAWARD_M = 4000;
 
 // Dominance threshold. If any class > 0.7 → dominant; else "mixed".
 const DOMINANCE = 0.7;
@@ -86,6 +96,60 @@ function safeIntersectArea(
   } catch {
     return 0;
   }
+}
+
+// Compute the initial compass bearing (radians, 0=N, clockwise) from a→b on
+// a sphere. Precision is ample for the ≤0.2 sq-deg AOIs we deal with.
+function bearingRad(a: number[], b: number[]): number {
+  const φ1 = (a[1] * Math.PI) / 180;
+  const φ2 = (b[1] * Math.PI) / 180;
+  const λ1 = (a[0] * Math.PI) / 180;
+  const λ2 = (b[0] * Math.PI) / 180;
+  const y = Math.sin(λ2 - λ1) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(λ2 - λ1);
+  return Math.atan2(y, x);
+}
+
+// Project a point [lon,lat] by `distM` metres along compass bearing `brg`
+// (radians). Equirectangular approximation — fine for ≤5 km hops at UK lats.
+function project(lon: number, lat: number, distM: number, brg: number): [number, number] {
+  const dLat = (distM * Math.cos(brg)) / 111320;
+  const dLon = (distM * Math.sin(brg)) / (111320 * Math.cos((lat * Math.PI) / 180));
+  return [lon + dLon, lat + dLat];
+}
+
+// Build seaward-side strips for each coastline segment. OSM convention:
+// coastlines are drawn with LAND on the LEFT, so the RIGHT-hand perpendicular
+// (bearing + 90°) points out to sea. We emit one thin rectangle per segment,
+// width = COASTLINE_SEAWARD_M. Many rectangles (one per segment) — Turf's
+// intersect can absorb that; the alternative (one long polyline offset) goes
+// pathological at sharp headlands where parallel lines self-intersect.
+function seawardStrips(
+  features: GeoJSON.Feature[],
+  distM: number,
+): Array<GeoJSON.Feature<GeoJSON.Polygon>> {
+  const out: Array<GeoJSON.Feature<GeoJSON.Polygon>> = [];
+  for (const f of features) {
+    if (!f.geometry || f.geometry.type !== "LineString") continue;
+    const coords = f.geometry.coordinates as Array<[number, number]>;
+    for (let i = 0; i < coords.length - 1; i++) {
+      const [lon1, lat1] = coords[i];
+      const [lon2, lat2] = coords[i + 1];
+      const brg = bearingRad([lon1, lat1], [lon2, lat2]);
+      const rightBrg = brg + Math.PI / 2;
+      const p3 = project(lon2, lat2, distM, rightBrg);
+      const p4 = project(lon1, lat1, distM, rightBrg);
+      out.push({
+        type: "Feature",
+        properties: { klass: "sea" },
+        geometry: {
+          type: "Polygon",
+          coordinates: [[[lon1, lat1], [lon2, lat2], p3, p4, [lon1, lat1]]],
+        },
+      });
+    }
+  }
+  return out;
 }
 
 // Convert a bag of line features (coastline, rivers) into buffered polygon
@@ -139,8 +203,14 @@ export function processTerrain(raw: TerrainFeatures): ProcessedTerrain {
       intertidalPolys.push(f as any);
     }
   }
-  // Coastlines → buffered strip → water.
+  // Coastlines → symmetric narrow buffer (wet strip) + seaward-only wide
+  // strip (open sea on the OSM right-hand side). Together these let a cell
+  // entirely offshore still show ~100% water without falsely flooding cells
+  // 2 km inland from a winding coast.
   for (const strip of bufferLines(raw.coastline?.features || [], () => COASTLINE_BUFFER_M)) {
+    waterPolys.push(strip);
+  }
+  for (const strip of seawardStrips(raw.coastline?.features || [], COASTLINE_SEAWARD_M)) {
     waterPolys.push(strip);
   }
   // Rivers/streams → buffered strip → water.

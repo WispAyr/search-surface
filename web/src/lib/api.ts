@@ -148,6 +148,9 @@ export interface MapPrefs {
   // amber terrain fill. Only has an effect on zones that actually have
   // searchable_windows attached.
   show_tide_overlay?: boolean;
+  // Street-name hover lens — show the road(s) under the cursor via cached
+  // Overpass lookup. Cheap on the Scotland mirror (~11m key quantisation).
+  show_street_lens?: boolean;
   pitch?: number;
   exaggeration?: number;
 }
@@ -195,6 +198,10 @@ export const searchHelpers = {
       method: "POST",
       body: JSON.stringify({ polygon }),
     }),
+  osmStreetsNearby: (lat: number, lon: number, radius = 40) =>
+    request<{ streets: Array<{ name: string; highway?: string; ref?: string }>; total: number; lat: number; lon: number; radius: number }>(
+      `/search/osm/streets-nearby?lat=${lat}&lon=${lon}&radius=${radius}`
+    ),
   osmFeatures: (bbox: [number, number, number, number]) =>
     request<{
       hazards: Array<{ kind: string; name: string; lat: number; lon: number }>;

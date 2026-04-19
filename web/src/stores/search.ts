@@ -21,6 +21,7 @@ export const DEFAULT_MAP_PREFS: Required<MapPrefs> = {
   show_datums: true,
   show_zone_labels: true,
   show_tide_overlay: false,
+  show_street_lens: false,
   pitch: 55,
   exaggeration: 1.3,
 };
@@ -156,6 +157,10 @@ interface SearchState {
   updateMapPrefs: (patch: Partial<MapPrefs>) => void;
   toggleMapLayerPanel: () => void;
   setShowMapLayerPanel: (v: boolean) => void;
+  // Street lens — last hovered point [lat, lon]. Maps push here (debounced),
+  // StreetLens component reacts.
+  streetLensPoint: [number, number] | null;
+  setStreetLensPoint: (p: [number, number] | null) => void;
 }
 
 export const useSearchStore = create<SearchState>((set) => ({
@@ -331,6 +336,9 @@ export const useSearchStore = create<SearchState>((set) => ({
 
   toggleMapLayerPanel: () => set((s) => ({ showMapLayerPanel: !s.showMapLayerPanel })),
   setShowMapLayerPanel: (v) => set({ showMapLayerPanel: v }),
+
+  streetLensPoint: null,
+  setStreetLensPoint: (p) => set({ streetLensPoint: p }),
 }));
 
 // Debounced persistence — rapid toggles (e.g. dragging pitch slider) shouldn't

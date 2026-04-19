@@ -508,6 +508,23 @@ export function SearchMap3D({ operation, onDatumSet, onSecondaryDatumPick }: Sea
       map.on("mouseenter", "datum-dot", () => { map.getCanvas().style.cursor = "pointer"; });
       map.on("mouseleave", "datum-dot", () => { map.getCanvas().style.cursor = ""; });
 
+      // Street-lens: debounced pointer → store. The subscribing StreetLens
+      // component handles the fetch (and only while the layer toggle is on).
+      let lensTimer: number | null = null;
+      const setLensPoint = (lat: number | null, lon: number | null) => {
+        const { mapPrefs, setStreetLensPoint } = useSearchStore.getState();
+        if (!mapPrefs.show_street_lens) return;
+        setStreetLensPoint(lat !== null && lon !== null ? [lat, lon] : null);
+      };
+      map.on("mousemove", (e) => {
+        if (lensTimer !== null) window.clearTimeout(lensTimer);
+        lensTimer = window.setTimeout(() => setLensPoint(e.lngLat.lat, e.lngLat.lng), 180);
+      });
+      map.on("mouseout", () => {
+        if (lensTimer !== null) window.clearTimeout(lensTimer);
+        setLensPoint(null, null);
+      });
+
       readyRef.current = true;
       setMapReady(true);
     };

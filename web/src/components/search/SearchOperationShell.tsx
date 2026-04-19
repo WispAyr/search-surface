@@ -23,6 +23,7 @@ import { AlarmBar } from "./AlarmBar";
 import { ConditionsStrip } from "./ConditionsStrip";
 import { ZelloPanel } from "../ZelloPanel";
 import { MapLayerPanel } from "./MapLayerPanel";
+import { StreetLens } from "./StreetLens";
 import { PanelRightOpen, Map as MapIcon, Layers, Box, ChevronRight, ChevronLeft } from "lucide-react";
 
 const SearchMap = dynamic(() => import("./SearchMap").then((m) => m.SearchMap), {
@@ -193,6 +194,8 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
           </div>
 
           {showMapLayerPanel && <MapLayerPanel />}
+
+          <StreetLens />
 
           {/* Mobile-only FAB to open the side panel as an overlay */}
           <button

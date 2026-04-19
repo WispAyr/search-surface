@@ -2,7 +2,7 @@
 
 import { useSearchStore } from "@/stores/search";
 import { BASEMAPS } from "./SearchMap3D";
-import { X, Mountain, Box, Layers, MapPin, Users, Tag, Sun, Waves } from "lucide-react";
+import { X, Mountain, Box, Layers, MapPin, Users, Tag, Sun, Waves, Search } from "lucide-react";
 import type { MapPrefs } from "@/lib/api";
 
 /** Slide-in preferences panel for the map view — basemap + layer toggles.
@@ -126,6 +126,12 @@ export function MapLayerPanel() {
             icon={<Waves size={14} />}
             value={!!mapPrefs.show_tide_overlay}
             onChange={(v) => updateMapPrefs({ show_tide_overlay: v })}
+          />
+          <Toggle
+            label="Street-name lens (hover)"
+            icon={<Search size={14} />}
+            value={!!mapPrefs.show_street_lens}
+            onChange={(v) => updateMapPrefs({ show_street_lens: v })}
           />
         </section>
 

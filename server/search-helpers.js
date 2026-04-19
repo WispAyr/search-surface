@@ -195,6 +195,42 @@ router.post('/osm/streets', async (req, res) => {
   }
 });
 
+// ── Streets near a point (map hover lens) ──
+// Query: ?lat=&lon=&radius=  (radius defaults to 40m, capped at 200m)
+// Returns the named ways whose geometry passes within `radius` of (lat,lon).
+// Cached 6h keyed at 4-decimal precision (~11m) so nearby hover pixels share.
+router.get('/osm/streets-nearby', async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lon = Number(req.query.lon);
+  const radius = Math.min(Math.max(Number(req.query.radius) || 40, 5), 200);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return res.status(400).json({ error: 'lat and lon required' });
+  }
+  try {
+    // 4dp ≈ 11m of quantisation — tiny enough that named streets still resolve,
+    // coarse enough that a hover hitting dozens of pixels on the same tarmac
+    // collapses to a single cache entry.
+    const keyLat = lat.toFixed(4);
+    const keyLon = lon.toFixed(4);
+    const key = `streetsnear:${keyLat}:${keyLon}:${radius}`;
+    const query = `[out:json][timeout:10];
+      way(around:${radius},${keyLat},${keyLon})["highway"]["name"];
+      out tags;`;
+    const data = await cached(key, 6 * 3600_000, () => overpass(query, 12_000));
+    const names = new Map();
+    for (const el of data.elements || []) {
+      const n = el.tags?.name;
+      if (!n) continue;
+      const entry = names.get(n) || { name: n, highway: el.tags?.highway, ref: el.tags?.ref };
+      names.set(n, entry);
+    }
+    const streets = [...names.values()].sort((a, b) => a.name.localeCompare(b.name));
+    res.json({ streets, total: streets.length, lat, lon, radius });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
 // ── Hazards / attractors from OSM within bbox ──
 // Returns hazards (water, cliffs, railway, quarries) + attractors (shelter, benches, play, shops)
 router.post('/osm/features', async (req, res) => {
