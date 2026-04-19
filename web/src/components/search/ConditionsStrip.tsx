@@ -93,7 +93,12 @@ export function ConditionsStrip({ operation }: ConditionsStripProps) {
     const now = Date.now();
     const sunsetMs = new Date(sun.sunset).getTime();
     const civilEndMs = new Date(sun.civil_twilight_end).getTime();
-    if (now < sunsetMs) {
+    const sunriseMs = sun.sunrise ? new Date(sun.sunrise).getTime() : null;
+    // Pre-dawn: API returns the *next* sunrise + sunset, so sunset can be
+    // ~18h away during the night. Only call it "Sunset in X" when sunrise
+    // has already passed (i.e. we're genuinely in daylight).
+    const isDaytime = sunriseMs !== null ? sunriseMs <= now && now < sunsetMs : now < sunsetMs;
+    if (isDaytime) {
       lightLabel = `Sunset in ${fmtCountdown(sunsetMs)}`;
       if (sunsetMs - now < 60 * 60_000) lightUrgent = true;   // < 1 hour
       if (sunsetMs - now < 30 * 60_000) lightCritical = true; // < 30 min
