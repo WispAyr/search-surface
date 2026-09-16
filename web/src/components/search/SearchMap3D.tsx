@@ -8,6 +8,8 @@ import type { SearchOperation, SearchDatum } from "@/types/search";
 import type { MapPrefs } from "@/lib/api";
 import type { Feature, FeatureCollection, Point, Polygon } from "geojson";
 import { TERRAIN_FILL, compositionLabel } from "@/lib/terrainClassifier";
+import { useAirActivity } from "@/hooks/useAirActivity";
+import { buildTrackLines, buildTrackCurtains, buildCentroids, buildLive } from "@/lib/airGeo";
 
 // Status colours mirror the 2D map so the two views read consistently.
 const STATUS_COLORS: Record<string, string> = {
@@ -55,10 +57,10 @@ export const BASEMAPS: BasemapDef[] = [
     id: "carto-dark",
     label: "Carto Dark",
     tiles: [
-      "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-      "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-      "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-      "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+      "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png?key=cb1_28os_1_6640553c01bf96814c1fab1a",
+      "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png?key=cb1_28os_1_6640553c01bf96814c1fab1a",
+      "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png?key=cb1_28os_1_6640553c01bf96814c1fab1a",
+      "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png?key=cb1_28os_1_6640553c01bf96814c1fab1a",
     ],
     attribution: "© OpenStreetMap · © CARTO",
     background: "#0a0e1a",
@@ -67,10 +69,10 @@ export const BASEMAPS: BasemapDef[] = [
     id: "carto-light",
     label: "Carto Light",
     tiles: [
-      "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png",
-      "https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png",
-      "https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png",
-      "https://d.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png",
+      "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png?key=cb1_28os_1_6640553c01bf96814c1fab1a",
+      "https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png?key=cb1_28os_1_6640553c01bf96814c1fab1a",
+      "https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png?key=cb1_28os_1_6640553c01bf96814c1fab1a",
+      "https://d.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png?key=cb1_28os_1_6640553c01bf96814c1fab1a",
     ],
     attribution: "© OpenStreetMap · © CARTO",
     background: "#f3f4f6",
@@ -126,6 +128,14 @@ export function SearchMap3D({ operation, onDatumSet, onSecondaryDatumPick }: Sea
     selectedZoneId,
     selectZone,
   } = useSearchStore();
+  const showAir = !!mapPrefs.show_air;
+  const hiddenAircraft = useSearchStore((st) => st.hiddenAircraft);
+  const airFocus = useSearchStore((st) => st.airFocus);
+  const setAirFocus = useSearchStore((st) => st.setAirFocus);
+  const hiddenAir = useMemo(() => new Set(hiddenAircraft), [hiddenAircraft]);
+  const airVisRef = useRef(showAir);
+  useEffect(() => { airVisRef.current = showAir; }, [showAir]);
+
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -299,6 +309,10 @@ export function SearchMap3D({ operation, onDatumSet, onSecondaryDatumPick }: Sea
     map.addSource("zone-labels", { type: "geojson", data: emptyFC });
     map.addSource("datums", { type: "geojson", data: emptyFC });
     map.addSource("teams", { type: "geojson", data: emptyFC });
+    map.addSource("air-tracks", { type: "geojson", data: emptyFC });
+    map.addSource("air-curtains", { type: "geojson", data: emptyFC });
+    map.addSource("air-centroids", { type: "geojson", data: emptyFC });
+    map.addSource("air-live", { type: "geojson", data: emptyFC });
 
     // Flat zone outline / fill — always visible, 3D extrusion rides on top.
     map.addLayer({
@@ -432,6 +446,76 @@ export function SearchMap3D({ operation, onDatumSet, onSecondaryDatumPick }: Sea
         "text-halo-width": 1.2,
       },
     });
+
+    // ── Air activity ──────────────────────────────────────────────────────
+    // Ground lines first (context), then altitude curtains, then markers.
+    map.addLayer({
+      id: "air-track-line",
+      type: "line",
+      source: "air-tracks",
+      layout: { "line-cap": "round", "line-join": "round", visibility: airVisRef.current ? "visible" : "none" },
+      paint: {
+        "line-color": ["get", "color"],
+        "line-width": ["case", ["get", "loiter"], 2, 1],
+        "line-opacity": ["case", ["get", "loiter"], 0.85, 0.25],
+      },
+    });
+    map.addLayer({
+      id: "air-track-curtain",
+      type: "fill-extrusion",
+      source: "air-curtains",
+      layout: { visibility: airVisRef.current ? "visible" : "none" },
+      paint: {
+        "fill-extrusion-color": ["get", "color"],
+        "fill-extrusion-base": 0,
+        "fill-extrusion-height": ["get", "alt_m"],
+        // Over ESRI satellite a translucent wall washes out to near-white, so
+        // these run opaque-ish with the gradient off. The gradient lightens the
+        // top face, which is exactly the part that has to stay readable.
+        "fill-extrusion-opacity": 0.8,
+        "fill-extrusion-vertical-gradient": false,
+      },
+    });
+    map.addLayer({
+      id: "air-centroid",
+      type: "circle",
+      source: "air-centroids",
+      layout: { visibility: airVisRef.current ? "visible" : "none" },
+      paint: {
+        "circle-radius": 7,
+        "circle-color": ["get", "color"],
+        "circle-opacity": 0.3,
+        "circle-stroke-width": 2,
+        "circle-stroke-color": ["get", "color"],
+      },
+    });
+    map.addLayer({
+      id: "air-centroid-label",
+      type: "symbol",
+      source: "air-centroids",
+      layout: {
+        visibility: airVisRef.current ? "visible" : "none",
+        "text-field": ["get", "label"],
+        "text-size": 11,
+        "text-offset": [0, -1.4],
+        "text-anchor": "bottom",
+      },
+      paint: { "text-color": "#e6edf3", "text-halo-color": "#0b0f14", "text-halo-width": 1.4 },
+    });
+    map.addLayer({
+      id: "air-live-dot",
+      type: "circle",
+      source: "air-live",
+      layout: { visibility: airVisRef.current ? "visible" : "none" },
+      paint: {
+        "circle-radius": ["case", ["get", "of_interest"], 7, 4],
+        "circle-color": ["get", "color"],
+        "circle-opacity": ["case", ["get", "of_interest"], 1, 0.6],
+        "circle-stroke-width": ["case", ["get", "of_interest"], 2, 1],
+        "circle-stroke-color": ["case", ["get", "of_interest"], "#ffffff", ["get", "color"]],
+      },
+    });
+
   };
 
   // ── Map init ──────────────────────────────────────────────────
@@ -571,10 +655,18 @@ export function SearchMap3D({ operation, onDatumSet, onSecondaryDatumPick }: Sea
         });
       } catch {}
       applyAllLayerVisibility();
+      applyAirVisibility();
       pushAllSources();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapPrefs.basemap, mapReady]);
+
+  // ── Air activity: same hook the 2D layer uses, so the views cannot disagree ──
+  const { tracks: airTracks, live: airLive } = useAirActivity(operation.id, showAir);
+  const airLinesFC = useMemo(() => buildTrackLines(airTracks, hiddenAir), [airTracks, hiddenAir]);
+  const airCurtainsFC = useMemo(() => buildTrackCurtains(airTracks, { hidden: hiddenAir }), [airTracks, hiddenAir]);
+  const airCentroidsFC = useMemo(() => buildCentroids(airTracks, hiddenAir), [airTracks, hiddenAir]);
+  const airLiveFC = useMemo(() => buildLive(airLive), [airLive]);
 
   // ── Push sources whenever data changes ──
   const pushAllSources = () => {
@@ -584,9 +676,38 @@ export function SearchMap3D({ operation, onDatumSet, onSecondaryDatumPick }: Sea
     (map.getSource("zone-labels") as maplibregl.GeoJSONSource | undefined)?.setData(zoneLabelsFC as any);
     (map.getSource("datums") as maplibregl.GeoJSONSource | undefined)?.setData(datumsFC as any);
     (map.getSource("teams") as maplibregl.GeoJSONSource | undefined)?.setData(teamsFC as any);
+    (map.getSource("air-tracks") as maplibregl.GeoJSONSource | undefined)?.setData(airLinesFC as any);
+    (map.getSource("air-curtains") as maplibregl.GeoJSONSource | undefined)?.setData(airCurtainsFC as any);
+    (map.getSource("air-centroids") as maplibregl.GeoJSONSource | undefined)?.setData(airCentroidsFC as any);
+    (map.getSource("air-live") as maplibregl.GeoJSONSource | undefined)?.setData(airLiveFC as any);
   };
 
-  useEffect(() => { if (mapReady) pushAllSources(); /* eslint-disable-next-line */ }, [zonesFC, zoneLabelsFC, datumsFC, teamsFC, mapReady]);
+  useEffect(() => { if (mapReady) { applyAirVisibility(); pushAllSources(); } /* eslint-disable-next-line */ }, [zonesFC, zoneLabelsFC, datumsFC, teamsFC, airLinesFC, airCurtainsFC, airCentroidsFC, airLiveFC, mapReady]);
+
+  // Fly to whatever the Air panel asked for, then clear the request so the
+  // map does not fight the operator for control of the camera afterwards.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || !airFocus) return;
+    map.easeTo({ center: [airFocus[1], airFocus[0]], zoom: airFocus[2], duration: 800 });
+    setAirFocus(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [airFocus, mapReady]);
+
+  // ── Air-activity visibility ──
+  // Kept separate from the prefs-driven layers: this one follows the header
+  // toggle, and it must re-apply after a basemap restyle wipes the style.
+  const AIR_LAYER_IDS = ["air-track-line", "air-track-curtain", "air-centroid", "air-centroid-label", "air-live-dot"];
+  const applyAirVisibility = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const id of AIR_LAYER_IDS) {
+      if (map.getLayer(id)) {
+        try { map.setLayoutProperty(id, "visibility", showAir ? "visible" : "none"); } catch {}
+      }
+    }
+  };
+  useEffect(() => { if (mapReady) applyAirVisibility(); /* eslint-disable-next-line */ }, [showAir, mapReady]);
 
   // ── Apply layer visibility from prefs ──
   const applyAllLayerVisibility = () => {

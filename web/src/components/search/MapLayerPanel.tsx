@@ -2,8 +2,30 @@
 
 import { useSearchStore } from "@/stores/search";
 import { BASEMAPS } from "./SearchMap3D";
-import { X, Mountain, Box, Layers, MapPin, Users, Tag, Sun, Waves, Search } from "lucide-react";
+import { X, Mountain, Box, Layers, MapPin, Users, Tag, Sun, Waves, Search, Store, Radio } from "lucide-react";
 import type { MapPrefs } from "@/lib/api";
+
+// Presets exposed in the premises dropdown. Keep in sync with siphon
+// PRESETS in /siphon/sources/osm_query.py (subset chosen for SAR use).
+const PREMISES_PRESETS: Array<{ value: string; label: string }> = [
+  { value: "businesses", label: "All businesses & premises" },
+  { value: "hospital", label: "Hospitals" },
+  { value: "pharmacy", label: "Pharmacies" },
+  { value: "defibrillator", label: "Defibrillators" },
+  { value: "police", label: "Police stations" },
+  { value: "fire_station", label: "Fire stations" },
+  { value: "lifeboat", label: "Lifeboat stations" },
+  { value: "hotel", label: "Hotels & accommodation" },
+  { value: "camp_site", label: "Campsites & caravan parks" },
+  { value: "place_of_worship", label: "Places of worship" },
+  { value: "school", label: "Schools" },
+  { value: "library", label: "Libraries" },
+  { value: "sports_centre", label: "Sports centres" },
+  { value: "fuel", label: "Fuel stations" },
+  { value: "supermarket", label: "Supermarkets" },
+  { value: "post_office", label: "Post offices" },
+  { value: "atm", label: "ATMs" },
+];
 
 /** Slide-in preferences panel for the map view — basemap + layer toggles.
  *  Every change goes through `updateMapPrefs` which debounces a PUT to the
@@ -128,11 +150,51 @@ export function MapLayerPanel() {
             onChange={(v) => updateMapPrefs({ show_tide_overlay: v })}
           />
           <Toggle
+            label="Air activity (ADS-B)"
+            icon={<Radio size={14} />}
+            value={!!mapPrefs.show_air}
+            onChange={(v) => updateMapPrefs({ show_air: v })}
+          />
+          <Toggle
             label="Street-name lens (hover)"
             icon={<Search size={14} />}
             value={!!mapPrefs.show_street_lens}
             onChange={(v) => updateMapPrefs({ show_street_lens: v })}
           />
+          <Toggle
+            label="Premises (businesses & POIs)"
+            icon={<Store size={14} />}
+            value={!!mapPrefs.show_premises}
+            onChange={(v) => updateMapPrefs({ show_premises: v })}
+          />
+          {mapPrefs.show_premises && (
+            <div className="mt-1 mb-1 pl-5 space-y-2">
+              <label className="block text-[11px] text-fg-3">
+                <span className="block mb-0.5 text-fg-4">Category</span>
+                <select
+                  value={mapPrefs.premises_preset || "businesses"}
+                  onChange={(e) => updateMapPrefs({ premises_preset: e.target.value })}
+                  className="w-full bg-surface-900 border border-surface-600 rounded px-1.5 py-1 text-[11px] text-fg-1"
+                >
+                  {PREMISES_PRESETS.map((p) => (
+                    <option key={p.value} value={p.value}>{p.label}</option>
+                  ))}
+                </select>
+              </label>
+              <RangeField
+                label="Radius from datum"
+                min={500}
+                max={5000}
+                step={250}
+                value={mapPrefs.premises_radius_m || 2000}
+                suffix=" m"
+                onChange={(v) => updateMapPrefs({ premises_radius_m: v })}
+              />
+              <p className="text-[10px] text-fg-4 leading-relaxed">
+                Pulls OSM premises within radius of the primary datum via siphon. No datum set → no results.
+              </p>
+            </div>
+          )}
         </section>
 
         <p className="text-[10px] text-fg-4 leading-relaxed">

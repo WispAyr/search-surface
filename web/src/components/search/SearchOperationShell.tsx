@@ -7,6 +7,8 @@ import { useSearchStore } from "@/stores/search";
 import { useSearchOperation } from "@/hooks/useSearchData";
 import { useSearchStream } from "@/hooks/useSearchStream";
 import { OperationHeader } from "./OperationHeader";
+import { ResidualBoard } from "./ResidualBoard";
+import { AirPanel } from "./AirPanel";
 import { ZoneStatusBoard } from "./ZoneStatusBoard";
 import { TeamTracker } from "./TeamTracker";
 import { ReportsPanel } from "./ReportsPanel";
@@ -246,7 +248,7 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
             >
               <MapIcon size={14} />
             </button>
-            {(["zones", "datums", "timeline", "sar", "reports", "comms", "zello", "teams", "conditions", "audit"] as const).map((tab) => (
+            {(["zones", "residual", "air", "datums", "timeline", "sar", "reports", "comms", "zello", "teams", "conditions", "audit"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setRightPanel(tab)}
@@ -264,6 +266,8 @@ export function SearchOperationShell({ operationId }: SearchOperationShellProps)
           {/* Panel content */}
           <div className="flex-1 overflow-y-auto">
             {rightPanel === "zones" && <ZoneStatusBoard operation={op} onRefresh={refresh} />}
+            {rightPanel === "residual" && <ResidualBoard operation={op} />}
+            {rightPanel === "air" && <AirPanel operation={op} />}
             {rightPanel === "datums" && <DatumsPanel operation={op} onRefresh={refresh} />}
             {rightPanel === "timeline" && <SubjectTimeline operation={op} />}
             {rightPanel === "sar" && <SarToolsPanel operation={op} />}

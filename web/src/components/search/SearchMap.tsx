@@ -6,6 +6,8 @@ import L from "leaflet";
 import { useSearchStore } from "@/stores/search";
 import { searchHelpers } from "@/lib/api";
 import { AirspaceLayer } from "./AirspaceLayer";
+import { AirActivityLayer } from "./AirActivityLayer";
+import { PremisesLayer } from "./PremisesLayer";
 import { SarOverlays } from "./SarOverlays";
 import type { SearchOperation, SearchZone, SearchDatum } from "@/types/search";
 import { TERRAIN_FILL, compositionLabel } from "@/lib/terrainClassifier";
@@ -94,6 +96,7 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
     settingDatum,
     setSettingDatum,
     showAirspace,
+    showAir,
     mobilePanelOpen,
     addingDatum,
     setAddingDatum,
@@ -227,6 +230,18 @@ export function SearchMap({ operation, onDatumSet, onSecondaryDatumPick }: Searc
 
       {/* UK Airspace restrictions overlay */}
       <AirspaceLayer visible={showAirspace} />
+
+      {/* Air activity — live ADS-B + loiter history around the datum */}
+      <AirActivityLayer operationId={operation.id} visible={!!mapPrefs.show_air} />
+
+      {/* Premises / POIs around the primary datum (siphon OSM proximity) */}
+      <PremisesLayer
+        visible={!!mapPrefs.show_premises}
+        datumLat={anchorLat}
+        datumLon={anchorLon}
+        preset={mapPrefs.premises_preset || "businesses"}
+        radiusM={mapPrefs.premises_radius_m || 2000}
+      />
 
       {/* SAR overlays (LPB rings, travel circles, hazards, route) */}
       <SarOverlays datumLat={anchorLat} datumLon={anchorLon} />

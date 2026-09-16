@@ -3,6 +3,8 @@
 // which serves /api/search/* directly and proxies /api/siphon/* and /api/prism/*
 // to their upstream services.
 
+import type { SearchZone } from "@/types/search";
+
 const BASE = "/api";
 
 // Subscribers get notified on 401 (auth required) so the shell can surface the
@@ -21,7 +23,17 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     if (res.status === 401 && authFailureHandler) authFailureHandler();
-    throw new Error(`API ${res.status}: ${text}`);
+    // Keep the structured body on the error. A clearance refusal carries the
+    // REASONS it was refused, and those have to reach the operator intact —
+    // "API 409: {json}" in a toast is how a gate gets ignored.
+    let parsed: any = null;
+    try { parsed = JSON.parse(text); } catch { /* not JSON */ }
+    const err: any = new Error(parsed?.error || `API ${res.status}: ${text}`);
+    err.status = res.status;
+    err.body = parsed;
+    err.reasons = parsed?.reasons || null;
+    err.remedy = parsed?.remedy || null;
+    throw err;
   }
   return res.json();
 }
@@ -140,6 +152,10 @@ export interface MapPrefs {
   show_hillshade?: boolean;
   extrude_zones?: boolean;
   show_airspace?: boolean;
+  // Air activity (live ADS-B + helicopter loiter history). Persisted like every
+  // other layer — it lived in transient store state and silently reset on every
+  // reload, which is half the reason nobody could find it.
+  show_air?: boolean;
   show_teams?: boolean;
   show_datums?: boolean;
   show_zone_labels?: boolean;
@@ -151,6 +167,12 @@ export interface MapPrefs {
   // Street-name hover lens — show the road(s) under the cursor via cached
   // Overpass lookup. Cheap on the Scotland mirror (~11m key quantisation).
   show_street_lens?: boolean;
+  // Premises / POI layer — OSM businesses, shops, offices, accommodation
+  // around the primary datum. Used for welfare / last-seen leads and
+  // shelter-point lookups during SAR ops.
+  show_premises?: boolean;
+  premises_preset?: string;
+  premises_radius_m?: number;
   pitch?: number;
   exaggeration?: number;
 }
@@ -306,6 +328,18 @@ export const search = {
     request<unknown>(`/search/operations/${opId}/zones`, { method: "POST", body: JSON.stringify(data) }),
   createZonesBatch: (opId: string, zones: Record<string, unknown>[]) =>
     request<unknown>(`/search/operations/${opId}/zones/batch`, { method: "POST", body: JSON.stringify({ zones }) }),
+  podModel: () => request<PodModel>(`/search/pod/model`),
+  residual: (opId: string) => request<ResidualReport>(`/search/operations/${opId}/residual`),
+  zoneSweeps: (zoneId: string) =>
+    request<{ sweeps: ZoneSweep[]; cumulative_pod: number; clearance: { ok: boolean; reasons: string[]; cumulative_pod: number } }>(
+      `/search/zones/${zoneId}/sweeps`),
+  recordSweep: (zoneId: string, data: Record<string, unknown>) =>
+    request<{ sweep: ZoneSweep; zone: SearchZone }>(`/search/zones/${zoneId}/sweeps`,
+      { method: "POST", body: JSON.stringify(data) }),
+  acceptZoneRisk: (zoneId: string, reason: string, accepted_by?: string) =>
+    request<SearchZone>(`/search/zones/${zoneId}/accept-risk`,
+      { method: "POST", body: JSON.stringify({ reason, accepted_by }) }),
+
   updateZone: (zoneId: string, data: Record<string, unknown>) =>
     request<unknown>(`/search/zones/${zoneId}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteZone: (zoneId: string) =>
@@ -388,6 +422,36 @@ export const search = {
     request<unknown>(`/search/field/report?token=${token}`, { method: "POST", body: JSON.stringify(data) }),
   fieldCheckin: (token: string, lat: number, lon: number) =>
     request<unknown>(`/search/field/checkin?token=${token}`, { method: "POST", body: JSON.stringify({ lat, lon }) }),
+
+  // Hybrid identity — name-in on the field device. Returns a sub-token that
+  // the phone stores locally; attach it as `member_token` on subsequent
+  // report/checkin/photo calls to attribute the report to an individual.
+  fieldIdentify: (token: string, name: string) =>
+    request<{ member_id: string; sub_token: string; name: string }>(
+      `/search/field/identify?token=${encodeURIComponent(token)}`,
+      { method: "POST", body: JSON.stringify({ name }) },
+    ),
+
+  // Team roster (named-in members)
+  listTeamMembers: (teamId: string) =>
+    request<{ members: Array<{ id: string; team_id: string; name: string; created_at: string; last_seen_at: string | null }> }>(
+      `/search/teams/${teamId}/members`,
+    ),
+  listOperationMembers: (opId: string) =>
+    request<{ members: Array<{ id: string; team_id: string; name: string; created_at: string; last_seen_at: string | null }> }>(
+      `/search/operations/${opId}/members`,
+    ),
+
+  // Zone print-sheet context — fetched by /zone/[id]/print
+  getZonePrintContext: (zoneId: string) =>
+    request<{
+      zone: { id: string; name: string; status: string; priority: number; notes: string | null; search_method: string; geometry: GeoJSON.Feature | GeoJSON.Geometry | null; terrain_class: string | null; corridor_metadata: unknown; pod: number; cumulative_pod: number };
+      operation: { id: string; name: string; type: string; status: string; subject_info: Record<string, unknown> | null; datum_lat: number | null; datum_lon: number | null; identity_mode: "team" | "prompt" | "required" };
+      team: { id: string; name: string; callsign: string; color: string; capability: string; platform_type: string | null; token: string; field_url: string } | null;
+      datums: Array<{ id: string; label: string; kind: string; lat: number; lon: number; notes: string | null }>;
+      streets: Array<{ name: string; cleared_at: string | null }>;
+      generated_at: string;
+    }>(`/search/zones/${zoneId}/print-context`),
 };
 
 // ── Types (subset used by search components) ──
@@ -417,4 +481,73 @@ export interface MetarData {
   dewpoint_c: number;
   pressure_hpa: number;
   clouds: { coverage: string; altitude_ft: number }[];
+}
+
+
+// ── Air activity (ADS-B via siphon + egpk trail log) ──
+export interface AirLiveAircraft {
+  icao24: string; callsign: string | null; registration: string | null;
+  type_code: string | null; operator: string | null;
+  lat: number; lon: number; alt_m: number | null; heading: number | null;
+  speed_ms: number | null; on_ground: boolean; dist_m: number;
+  category: string; of_interest: boolean;
+}
+export interface AirLive {
+  datum: [number, number]; radius_km: number; count: number; of_interest: number;
+  fetched_at: string; aircraft: AirLiveAircraft[]; source: string;
+}
+export interface AirTrack {
+  icao24: string; callsign: string | null; registration: string | null;
+  type_code: string | null; operator: string | null;
+  points: number; points_geo: [number, number, number | null, string][];
+  avg_speed_ms: number | null; spread_m: number | null; category: string;
+  centroid: [number, number]; centroid_dist_m: number;
+  min_alt_m: number | null; max_alt_m: number | null;
+  first_seen: string; last_seen: string; minutes_on_station: number; loiter: boolean;
+}
+export interface AirTracks {
+  datum: [number, number]; window_hours: number; radius_km: number;
+  aircraft: number; loiterers: number; total_points: number;
+  loiter_criteria?: {
+    min_minutes: number; max_min_alt_m: number;
+    max_spread_m: number; max_centroid_dist_m: number;
+  };
+  tracks: AirTrack[]; caveat: string;
+}
+export const air = {
+  live: (opId: string, q?: { radius_km?: number }) =>
+    request<AirLive>(`/search/air/live/${opId}?radius_km=${q?.radius_km ?? 40}`),
+  tracks: (opId: string, q?: { hours?: number; radius_km?: number }) =>
+    request<AirTracks>(`/search/air/tracks/${opId}?hours=${q?.hours ?? 48}&radius_km=${q?.radius_km ?? 8}`),
+};
+
+
+// ── Residual probability / POD (docs/residual-probability.md) ──
+export interface ResidualZone {
+  zone_id: string; name: string; status: string; search_method: string;
+  poa_initial: number; cumulative_pod: number; sweep_count: number;
+  poa_current: number; poa_delta: number; rank: number; water: boolean;
+  priority: number | null; assigned_team_id: string | null;
+  risk_accepted_by: string | null; needs_subsurface: boolean; clearable: boolean;
+}
+export interface ResidualReport {
+  operation_id: string;
+  poa_outside_initial: number; poa_outside_current: number;
+  searched_fraction: number; clear_pod_threshold: number;
+  zones: ResidualZone[]; gaps: ResidualZone[]; top_residual: ResidualZone | null;
+}
+export interface ZoneSweep {
+  id: string; zone_id: string; operation_id: string; team_id: string | null;
+  resource_class: string; method: string | null; conditions: string[];
+  coverage: number; pod: number; pod_basis: Record<string, unknown> | null;
+  searched_by: string | null; notes: string | null;
+  started_at: string | null; completed_at: string | null; created_at: string;
+}
+export interface PodModel {
+  resource_classes: Record<string, { label: string; subsurface: boolean }>;
+  base_pod: Record<string, Record<string, number>>;
+  default_method: Record<string, string>;
+  modifiers: Record<string, { factor: number; label: string }>;
+  default_clear_pod: number;
+  note: string;
 }

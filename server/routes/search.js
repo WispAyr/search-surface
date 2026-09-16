@@ -1,5 +1,5 @@
 const express = require('express');
-const { operations, zones, teams, reports, comms, datums, audit, shareTokens, generateSitrep } = require('../search-db');
+const { operations, zones, teams, members, reports, comms, datums, audit, shareTokens, generateSitrep, sweeps, pod } = require('../search-db');
 const searchHelpers = require('../search-helpers');
 const { isValidPlatform } = require('../lib/capabilities');
 const { attachTenant, requireTenant } = require('../tenant-middleware');
@@ -145,12 +145,26 @@ const upload = multer({
 });
 
 // ── Field team auth middleware ──
+// Also resolves an optional member sub-token (hybrid identity). When present,
+// the member is touched (last_seen bumped) and attached to the request so
+// downstream handlers can attribute reports/checkins to an individual.
 function fieldAuth(req, res, next) {
   const token = req.query.token || req.headers['x-search-token'] || req.cookies?.search_token;
   if (!token) return res.status(401).json({ error: 'Team token required' });
   const team = teams.getByToken(token);
   if (!team) return res.status(401).json({ error: 'Invalid team token' });
   req.searchTeam = team;
+
+  const subToken = req.query.member_token || req.headers['x-member-token'] || req.cookies?.search_member_token;
+  if (subToken) {
+    const m = members.getBySubToken(subToken);
+    // Silently ignore if the sub-token belongs to a different team (e.g. team
+    // was rotated) — the field page will re-prompt on the next identify call.
+    if (m && m.team_id === team.id) {
+      req.searchMember = m;
+      members.touch(m.id);
+    }
+  }
   next();
 }
 
@@ -287,6 +301,25 @@ router.patch('/zones/:zoneId', requireSearchAdmin, (req, res) => {
   const before = zones.get(req.params.zoneId);
   if (!before) return res.status(404).json({ error: 'Zone not found' });
   if (!guardOperationId(req, res, before.operation_id)) return;
+  // Clearance gate. 'complete' is a claim about evidence, so it has to be paid
+  // for with sweeps or with somebody's name. Refused outright rather than
+  // warned about — warnings get clicked through at 3am.
+  if (req.body.status === 'complete' && before.status !== 'complete') {
+    const op = operations.get(before.operation_id);
+    const check = pod.clearanceCheck(before, sweeps.listByZone(before.id), {
+      clear_pod: op?.clear_pod_threshold ?? pod.DEFAULT_CLEAR_POD,
+    });
+    if (!check.ok) {
+      return res.status(409).json({
+        error: 'Zone cannot be marked complete yet',
+        cumulative_pod: check.cumulative_pod,
+        reasons: check.reasons,
+        remedy: 'Record the sweep that was actually done (POST /zones/:id/sweeps), '
+          + 'or accept the residual risk by name (POST /zones/:id/accept-risk).',
+      });
+    }
+  }
+
   const zone = zones.update(req.params.zoneId, req.body);
   if (!zone) return res.status(404).json({ error: 'Zone not found' });
   broadcast(zone.operation_id, { type: 'zone_updated', data: zone });
@@ -316,6 +349,152 @@ router.delete('/zones/:zoneId', requireSearchAdmin, (req, res) => {
   zones.delete(req.params.zoneId);
   broadcast(zone.operation_id, { type: 'operation_updated', data: { id: zone.operation_id } });
   res.json({ ok: true });
+});
+
+// ════════════════════════════════════════════════
+// SWEEPS / RESIDUAL PROBABILITY  (docs/residual-probability.md)
+// ════════════════════════════════════════════════
+
+// Reference data for the sweep form — resource classes, methods, modifiers.
+router.get('/pod/model', requireTenant, (req, res) => {
+  res.json({
+    resource_classes: pod.RESOURCE_CLASSES,
+    base_pod: pod.BASE_POD,
+    default_method: pod.DEFAULT_METHOD,
+    modifiers: pod.MODIFIERS,
+    correlation_decay: pod.CORRELATION_DECAY,
+    default_clear_pod: pod.DEFAULT_CLEAR_POD,
+    note: 'Base PODs are planning defaults from published SAR ranges, not values '
+      + 'validated against this team. Replace them with real outcome data.',
+  });
+});
+
+router.get('/zones/:zoneId/sweeps', requireTenant, (req, res) => {
+  const zone = zones.get(req.params.zoneId);
+  if (!zone) return res.status(404).json({ error: 'Zone not found' });
+  if (!guardOperationId(req, res, zone.operation_id)) return;
+  const list = sweeps.listByZone(zone.id);
+  const op = operations.get(zone.operation_id);
+  res.json({
+    sweeps: list,
+    cumulative_pod: pod.cumulativePod(list),
+    clearance: pod.clearanceCheck(zone, list, {
+      clear_pod: op?.clear_pod_threshold ?? pod.DEFAULT_CLEAR_POD,
+    }),
+  });
+});
+
+router.post('/zones/:zoneId/sweeps', requireSearchAdmin, (req, res) => {
+  const zone = zones.get(req.params.zoneId);
+  if (!zone) return res.status(404).json({ error: 'Zone not found' });
+  if (!guardOperationId(req, res, zone.operation_id)) return;
+  const { resource_class } = req.body || {};
+  if (!resource_class || !pod.RESOURCE_CLASSES[resource_class]) {
+    return res.status(400).json({
+      error: 'resource_class is required and must be known',
+      valid: Object.keys(pod.RESOURCE_CLASSES),
+    });
+  }
+  const sweep = sweeps.create(zone.id, {
+    ...req.body,
+    operation_id: zone.operation_id,
+    searched_by: req.body.searched_by || req.tenant.email,
+  });
+  if (sweep.pod === 0 && sweep.pod_basis && sweep.pod_basis.error) {
+    // Keep the row — a sweep that produced nothing is still a fact — but say so.
+    return res.status(201).json({ sweep, warning: sweep.pod_basis.error });
+  }
+  const fresh = zones.get(zone.id);
+  broadcast(zone.operation_id, { type: 'zone_updated', data: fresh });
+  res.status(201).json({ sweep, zone: fresh });
+});
+
+router.delete('/sweeps/:sweepId', requireSearchAdmin, (req, res) => {
+  const sweep = sweeps.get(req.params.sweepId);
+  if (!sweep) return res.status(404).json({ error: 'Sweep not found' });
+  if (!guardOperationId(req, res, sweep.operation_id)) return;
+  sweeps.remove(sweep.id);
+  audit.log(sweep.operation_id, req.tenant.email, 'sweep_deleted', { sweep_id: sweep.id, zone_id: sweep.zone_id });
+  broadcast(sweep.operation_id, { type: 'zone_updated', data: zones.get(sweep.zone_id) });
+  res.json({ ok: true });
+});
+
+// Leaving a gap open on purpose is allowed. Doing it anonymously is not.
+router.post('/zones/:zoneId/accept-risk', requireSearchAdmin, (req, res) => {
+  const zone = zones.get(req.params.zoneId);
+  if (!zone) return res.status(404).json({ error: 'Zone not found' });
+  if (!guardOperationId(req, res, zone.operation_id)) return;
+  const reason = (req.body?.reason || '').trim();
+  if (reason.length < 10) {
+    return res.status(400).json({ error: 'A reason of at least 10 characters is required — this is a named decision, not a dismissal.' });
+  }
+  const updated = zones.update(zone.id, {
+    risk_accepted_by: req.body.accepted_by || req.tenant.email,
+    risk_accepted_at: new Date().toISOString(),
+    risk_accepted_reason: reason,
+  });
+  audit.log(zone.operation_id, req.tenant.email, 'zone_risk_accepted', {
+    zone_id: zone.id, zone_name: zone.name, reason,
+    cumulative_pod: zone.cumulative_pod,
+  });
+  comms.add(zone.operation_id, {
+    from_callsign: 'SEARCH-OPS', to_callsign: 'ALL', type: 'system',
+    message: `RISK ACCEPTED — ${zone.name} left at ${Math.round((zone.cumulative_pod || 0) * 100)}% cumulative POD `
+      + `by ${req.body.accepted_by || req.tenant.email}. Reason: ${reason}`,
+  });
+  broadcast(zone.operation_id, { type: 'zone_updated', data: updated });
+  res.json(updated);
+});
+
+router.post('/zones/:zoneId/accept-risk/revoke', requireSearchAdmin, (req, res) => {
+  const zone = zones.get(req.params.zoneId);
+  if (!zone) return res.status(404).json({ error: 'Zone not found' });
+  if (!guardOperationId(req, res, zone.operation_id)) return;
+  const updated = zones.update(zone.id, {
+    risk_accepted_by: null, risk_accepted_at: null, risk_accepted_reason: null,
+  });
+  audit.log(zone.operation_id, req.tenant.email, 'zone_risk_acceptance_revoked', { zone_id: zone.id });
+  broadcast(zone.operation_id, { type: 'zone_updated', data: updated });
+  res.json(updated);
+});
+
+/**
+ * The board an SIO actually needs: what probability is STILL in each zone,
+ * given everything searched so far has come up empty. Sorted by residual, not
+ * by the priority someone typed during planning.
+ */
+router.get('/operations/:id/residual', requireTenant, (req, res) => {
+  const op = opForTenant(req, res, req.params.id);
+  if (!op) return;
+  const result = pod.residuals(op.zones || [], { poa_outside: op.poa_outside ?? pod.DEFAULT_POA_OUTSIDE });
+  const clearThreshold = op.clear_pod_threshold ?? pod.DEFAULT_CLEAR_POD;
+
+  const byId = new Map((op.zones || []).map(z => [z.id, z]));
+  const rows = result.zones.map((r) => {
+    const z = byId.get(r.zone_id);
+    return {
+      ...r,
+      priority: z?.priority ?? null,
+      assigned_team_id: z?.assigned_team_id ?? null,
+      risk_accepted_by: z?.risk_accepted_by ?? null,
+      needs_subsurface: r.water && !pod.hasSubsurfaceSweep(sweeps.listByZone(r.zone_id)),
+      clearable: pod.clearanceCheck(z || {}, sweeps.listByZone(r.zone_id), { clear_pod: clearThreshold }).ok,
+    };
+  });
+
+  // The gap list: everything still carrying meaningful probability.
+  const gaps = rows.filter(r => r.poa_current >= 0.02 && r.cumulative_pod < clearThreshold);
+
+  res.json({
+    operation_id: op.id,
+    poa_outside_initial: result.poa_outside_initial,
+    poa_outside_current: result.poa_outside_current,
+    searched_fraction: result.searched_fraction,
+    clear_pod_threshold: clearThreshold,
+    zones: rows,
+    gaps,
+    top_residual: rows[0] || null,
+  });
 });
 
 // ════════════════════════════════════════════════
@@ -423,6 +602,21 @@ router.patch('/teams/:teamId/streets/:streetName', (req, res) => {
   res.json(updated);
 });
 
+// Team roster — named-in members for a single team. Admin only.
+router.get('/teams/:teamId/members', requireTenant, (req, res) => {
+  const team = teams.get(req.params.teamId);
+  if (!team) return res.status(404).json({ error: 'Team not found' });
+  if (!guardOperationId(req, res, team.operation_id)) return;
+  res.json({ members: members.listByTeam(team.id) });
+});
+
+// All named-in members for an operation, grouped by team. Used by IC dashboard
+// to show how many team-anon vs named are on each assignment.
+router.get('/operations/:id/members', requireTenant, (req, res) => {
+  if (!guardOperationId(req, res, req.params.id)) return;
+  res.json({ members: members.listByOperation(req.params.id) });
+});
+
 router.post('/teams/:teamId/position', (req, res) => {
   const { lat, lon } = req.body;
   if (lat == null || lon == null) return res.status(400).json({ error: 'lat and lon required' });
@@ -478,7 +672,14 @@ router.get('/field/context', fieldAuth, (req, res) => {
       subject_info: op.subject_info,
       datum_lat: op.datum_lat,
       datum_lon: op.datum_lon,
+      identity_mode: op.identity_mode || 'prompt',
     },
+    // Hybrid identity — echo the resolved member (if the device holds a
+    // valid sub-token) so the field UI can show "Team Alpha · Jamie" and
+    // skip the prompt.
+    member: req.searchMember
+      ? { id: req.searchMember.id, name: req.searchMember.name }
+      : null,
     assigned_zones: assignedZones,
     recent_reports: recentReports,
     // Street-clear checklist and (optional) driving route already live on the
@@ -490,14 +691,43 @@ router.get('/field/context', fieldAuth, (req, res) => {
   });
 });
 
+// Name-in on first load. Returns a sub-token the phone stores in localStorage
+// and sends on every subsequent report/checkin. No-op if identity_mode='team'
+// — we still create the record but the client is free to ignore the sub-token.
+router.post('/field/identify', fieldAuth, (req, res) => {
+  const team = req.searchTeam;
+  const name = String(req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Name required' });
+  if (name.length > 60) return res.status(400).json({ error: 'Name too long (max 60 chars)' });
+  try {
+    const m = members.create(team.id, team.operation_id, name);
+    res.status(201).json({ member_id: m.id, sub_token: m.sub_token, name: m.name });
+  } catch (err) {
+    res.status(400).json({ error: err?.message || 'Identify failed' });
+  }
+});
+
+// identity_mode='required' enforcement lives in a tiny helper so the three
+// mutating field endpoints (report/checkin/photo) stay consistent.
+function blockIfIdentityRequired(req, res) {
+  const op = operations.get(req.searchTeam.operation_id);
+  if (op?.identity_mode === 'required' && !req.searchMember) {
+    res.status(403).json({ error: 'identity_required', message: 'This operation requires you to name in before reporting.' });
+    return true;
+  }
+  return false;
+}
+
 router.post('/field/report', fieldAuth, (req, res) => {
   const team = req.searchTeam;
   const { type, lat, lon, grid_ref, description, severity, zone_id, client_ts } = req.body;
   if (!type) return res.status(400).json({ error: 'type required' });
+  if (blockIfIdentityRequired(req, res)) return;
 
   const report = reports.create(team.operation_id, {
     zone_id,
     team_id: team.id,
+    member_id: req.searchMember?.id || null,
     type,
     lat,
     lon,
@@ -506,7 +736,7 @@ router.post('/field/report', fieldAuth, (req, res) => {
     severity,
     created_at: client_ts,
   });
-  broadcast(team.operation_id, { type: 'report_submitted', data: { ...report, team_name: team.name, team_callsign: team.callsign } });
+  broadcast(team.operation_id, { type: 'report_submitted', data: { ...report, team_name: team.name, team_callsign: team.callsign, member_name: req.searchMember?.name || null } });
   res.status(201).json(report);
 });
 
@@ -514,20 +744,23 @@ router.post('/field/checkin', fieldAuth, (req, res) => {
   const team = req.searchTeam;
   const { lat, lon, client_ts } = req.body;
   if (lat == null || lon == null) return res.status(400).json({ error: 'lat and lon required' });
+  if (blockIfIdentityRequired(req, res)) return;
 
   teams.updatePosition(team.id, lat, lon);
   broadcast(team.operation_id, {
     type: 'team_position',
-    data: { team_id: team.id, lat, lon, at: client_ts || new Date().toISOString(), name: team.name, callsign: team.callsign, color: team.color },
+    data: { team_id: team.id, lat, lon, at: client_ts || new Date().toISOString(), name: team.name, callsign: team.callsign, color: team.color, member_name: req.searchMember?.name || null },
   });
 
   // Also create a checkin report — honors client_ts when drained from offline queue.
+  const who = req.searchMember?.name ? `${team.callsign} · ${req.searchMember.name}` : team.callsign;
   reports.create(team.operation_id, {
     team_id: team.id,
+    member_id: req.searchMember?.id || null,
     type: 'checkin',
     lat,
     lon,
-    description: `Check-in from ${team.callsign}`,
+    description: `Check-in from ${who}`,
     severity: 'info',
     created_at: client_ts,
   });
@@ -538,6 +771,7 @@ router.post('/field/checkin', fieldAuth, (req, res) => {
 router.post('/field/photo', fieldAuth, upload.single('photo'), (req, res) => {
   const team = req.searchTeam;
   if (!req.file) return res.status(400).json({ error: 'No photo uploaded' });
+  if (blockIfIdentityRequired(req, res)) return;
 
   const photoUrl = `/api/search/uploads/${req.file.filename}`;
   const { lat, lon, grid_ref, description, zone_id } = req.body;
@@ -545,6 +779,7 @@ router.post('/field/photo', fieldAuth, upload.single('photo'), (req, res) => {
   const report = reports.create(team.operation_id, {
     zone_id: zone_id || null,
     team_id: team.id,
+    member_id: req.searchMember?.id || null,
     type: 'photo',
     lat: lat ? parseFloat(lat) : null,
     lon: lon ? parseFloat(lon) : null,
@@ -553,7 +788,7 @@ router.post('/field/photo', fieldAuth, upload.single('photo'), (req, res) => {
     photo_url: photoUrl,
     severity: 'info',
   });
-  broadcast(team.operation_id, { type: 'report_submitted', data: { ...report, team_name: team.name } });
+  broadcast(team.operation_id, { type: 'report_submitted', data: { ...report, team_name: team.name, member_name: req.searchMember?.name || null } });
   res.status(201).json(report);
 });
 
@@ -952,6 +1187,83 @@ router.get('/operations/:id/export/kml', requireTenant, (req, res) => {
 // ════════════════════════════════════════════════
 // DRONE FLIGHT PLAN DOWNLOAD
 // ════════════════════════════════════════════════
+
+// Print-sheet context for a single zone. One endpoint serves everything the
+// printable page needs: zone + geometry, the operation shell (subject, datum),
+// the assigned team with an unredacted token for the sign-in QR, any datums,
+// and the street list (fresh from OSM or — if the team is already assigned —
+// reused off the cached team checklist). Admin-only; bumps the street list
+// via Overpass cache so re-printing is cheap.
+router.get('/zones/:zoneId/print-context', requireTenant, async (req, res) => {
+  const zone = zones.get(req.params.zoneId);
+  if (!zone) return res.status(404).json({ error: 'Zone not found' });
+  if (!guardOperationId(req, res, zone.operation_id)) return;
+  const op = operations.get(zone.operation_id);
+  if (!op) return res.status(404).json({ error: 'Operation not found' });
+
+  const team = zone.assigned_team_id
+    ? (op.teams || []).find((t) => t.id === zone.assigned_team_id) || null
+    : null;
+
+  // Prefer the pre-built checklist — it's what the team actually sees on the
+  // phone, so the paper sheet matching it avoids "my app has street X but my
+  // printout doesn't". Fall back to a fresh OSM pull when no team is assigned.
+  let streets = [];
+  if (team?.street_checklist?.length) {
+    streets = team.street_checklist.map((s) => ({ name: s.name, cleared_at: s.cleared_at || null }));
+  } else {
+    const ring = zoneOuterRing(zone.geometry);
+    if (ring) {
+      try {
+        const fresh = await searchHelpers.streetsInPolygon(ring);
+        streets = fresh.map((s) => ({ name: s.name, cleared_at: null }));
+      } catch (err) {
+        console.warn('[search] print-context streets lookup failed:', err?.message || err);
+      }
+    }
+  }
+
+  res.json({
+    zone: {
+      id: zone.id,
+      name: zone.name,
+      status: zone.status,
+      priority: zone.priority,
+      notes: zone.notes,
+      search_method: zone.search_method,
+      geometry: zone.geometry,
+      terrain_class: zone.terrain_class,
+      corridor_metadata: zone.corridor_metadata,
+      pod: zone.pod,
+      cumulative_pod: zone.cumulative_pod,
+    },
+    operation: {
+      id: op.id,
+      name: op.name,
+      type: op.type,
+      status: op.status,
+      subject_info: op.subject_info,
+      datum_lat: op.datum_lat,
+      datum_lon: op.datum_lon,
+      identity_mode: op.identity_mode || 'prompt',
+    },
+    team: team ? {
+      id: team.id,
+      name: team.name,
+      callsign: team.callsign,
+      color: team.color,
+      capability: team.capability,
+      platform_type: team.platform_type,
+      // Unredacted token so the QR on the print can drop the phone straight
+      // into /field/<token>. Admin-auth required to reach this endpoint.
+      token: team.token,
+      field_url: `${PUBLIC_BASE}/field/${team.token}`,
+    } : null,
+    datums: (op.datums || []).map((d) => ({ id: d.id, label: d.label, kind: d.kind, lat: d.lat, lon: d.lon, notes: d.notes })),
+    streets,
+    generated_at: new Date().toISOString(),
+  });
+});
 
 // Download flight plan for a specific drone zone as GPX with waypoint sequence
 router.get('/zones/:zoneId/flight-plan/gpx', requireTenant, (req, res) => {
