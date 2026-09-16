@@ -40,6 +40,10 @@ export interface SearchOperation {
   team_count?: number;
   report_count?: number;
   sitrep_recipients?: string[];
+  // Hybrid identity mode — controls whether field devices prompt for a member
+  // name on first load (prompt), skip the prompt entirely (team = QR-only),
+  // or force each reporter to name in before posting (required).
+  identity_mode?: 'team' | 'prompt' | 'required';
 }
 
 export type DatumKind = 'lkp' | 'plp' | 'sighting' | 'witness' | 'other';

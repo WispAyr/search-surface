@@ -16,8 +16,17 @@ const OVERPASS_ENDPOINTS = (process.env.OVERPASS_URLS
       'https://overpass.kumi.systems/api/interpreter',
       'https://overpass.private.coffee/api/interpreter',
     ]
-).map(s => s.trim()).filter(Boolean);
+).map(s => s.trim()).filter(Boolean)
+  .filter(u => !u.includes('127.0.0.1:12345') && !u.includes('localhost:12345'));
 const OVERPASS = OVERPASS_ENDPOINTS[0];
+const _proxyRaw = (process.env.OVERPASS_PROXY || '').trim(); // overpass-only; never global HTTPS_PROXY
+const proxyCfg = (() => {
+  if (!_proxyRaw) return false;
+  try {
+    const u = new URL(_proxyRaw.includes('://') ? _proxyRaw : `http://${_proxyRaw}`);
+    return { host: u.hostname, port: Number(u.port || 80), protocol: (u.protocol || 'http:').replace(':','') };
+  } catch { return false; }
+})();
 // In-memory tally of which mirror most recently served us — resets on
 // process restart. Exposed via /api/search/osm/stats.
 const mirrorWins = {};
@@ -41,7 +50,7 @@ async function overpass(query, timeoutMs = 25000) {
   const hdrs = { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA };
   const raceOnce = () => {
     const attempts = OVERPASS_ENDPOINTS.map((url) =>
-      axios.post(url, body, { headers: hdrs, timeout: timeoutMs, validateStatus: s => s >= 200 && s < 300 })
+      axios.post(url, body, { headers: hdrs, timeout: timeoutMs, validateStatus: s => s >= 200 && s < 300, proxy: proxyCfg })
         .then((r) => ({ data: r.data, url }))
     );
     // Wrap Promise.any so the caller sees the same shape as before (just

@@ -11,6 +11,7 @@ import dynamic from "next/dynamic";
 import type { SearchStreetItem, SearchTeam } from "@/types/search";
 import { Check, Truck, MapPin, AlertTriangle, RefreshCw, Crosshair } from "lucide-react";
 import { enqueue, drain } from "@/lib/offline-queue";
+import { search } from "@/lib/api";
 import { OfflineBar } from "./OfflineBar";
 import { FieldActionBar } from "./FieldActionBar";
 import { ReportSheet, type QuickReportType } from "./ReportSheet";
@@ -30,7 +31,12 @@ interface FieldContext {
     subject_info: Record<string, unknown> | null;
     datum_lat: number | null;
     datum_lon: number | null;
+    identity_mode: "team" | "prompt" | "required";
   };
+  // Hybrid identity: populated when the device holds a valid sub-token. null
+  // means the device is reporting as the team (anon) — server still accepts
+  // this unless identity_mode='required'.
+  member: { id: string; name: string } | null;
   assigned_zones: Array<{
     id: string;
     name: string;
@@ -51,6 +57,13 @@ const POLL_MS = 8000;
 // separate from the manual check-in button so drivers can also checkin on demand.
 const AUTO_CHECKIN_MS = 5 * 60 * 1000;
 
+// localStorage key scoped to the team token so multiple teams on the same
+// device don't collide. When the IC rotates a team the old entry simply stops
+// matching (sub-token belongs to the wrong team_id) and the server returns
+// member=null — prompting the user to re-identify.
+function memberTokenKey(token: string) { return `search-member-token:${token}`; }
+function memberNameKey(token: string) { return `search-member-name:${token}`; }
+
 export default function FieldPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = use(params);
   const [ctx, setCtx] = useState<FieldContext | null>(null);
@@ -61,6 +74,19 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
   const [reportOpen, setReportOpen] = useState(false);
   const [lastFix, setLastFix] = useState<[number, number] | null>(null);
   const [lastFixAt, setLastFixAt] = useState<number | null>(null);
+  // Hybrid identity. memberToken is the sub-token this device holds (if any);
+  // memberName mirrors it for the header pill. showIdentify gates the first-
+  // load modal; it opens when the server reports identity_mode != 'team' and
+  // we have no sub-token yet, or when the member taps the pill to rename.
+  const [memberToken, setMemberToken] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try { return localStorage.getItem(memberTokenKey(token)); } catch { return null; }
+  });
+  const [memberName, setMemberName] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try { return localStorage.getItem(memberNameKey(token)); } catch { return null; }
+  });
+  const [showIdentify, setShowIdentify] = useState(false);
   // "unknown" = haven't tried; "ok" = last attempt succeeded; "denied" = permission
   // denied (unrecoverable without user action); "unavailable" = GPS off or no fix
   // in time. Tracked separately from toast because silent auto-checkin failures
@@ -91,12 +117,31 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
 
   async function load() {
     try {
-      const r = await fetch(`/api/search/field/context?token=${encodeURIComponent(token)}`);
+      const memberQs = memberToken ? `&member_token=${encodeURIComponent(memberToken)}` : "";
+      const r = await fetch(`/api/search/field/context?token=${encodeURIComponent(token)}${memberQs}`);
       if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
       const data = (await r.json()) as FieldContext;
       if (!mountedRef.current) return;
       setCtx(data);
       setError(null);
+      // If the server didn't resolve our sub-token (team rotated, member row
+      // removed, or none stored), clear local state so the prompt fires clean.
+      if (!data.member && memberToken) {
+        try { localStorage.removeItem(memberTokenKey(token)); localStorage.removeItem(memberNameKey(token)); } catch {}
+        setMemberToken(null);
+        setMemberName(null);
+      } else if (data.member) {
+        // Server is source of truth for the display name; keep local mirror in sync.
+        if (data.member.name !== memberName) {
+          setMemberName(data.member.name);
+          try { localStorage.setItem(memberNameKey(token), data.member.name); } catch {}
+        }
+      }
+      // First-load prompt: only when the op isn't team-only and we're not named in.
+      const mode = data.operation.identity_mode || "prompt";
+      if (!data.member && mode !== "team" && !memberToken) {
+        setShowIdentify(true);
+      }
       try { localStorage.setItem(ctxKey, JSON.stringify(data)); } catch {}
       // Opportunistic drain — any queued mutations ride out on successful fetch.
       drain().catch(() => {});
@@ -145,9 +190,10 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
       try { localStorage.setItem(ctxKey, JSON.stringify(next)); } catch {}
       return next;
     });
+    const memberQs = memberToken ? `&member_token=${encodeURIComponent(memberToken)}` : "";
     await enqueue({
       kind: "street",
-      url: `/api/search/teams/${ctx.team.id}/streets/${encodeURIComponent(streetName)}?token=${encodeURIComponent(token)}`,
+      url: `/api/search/teams/${ctx.team.id}/streets/${encodeURIComponent(streetName)}?token=${encodeURIComponent(token)}${memberQs}`,
       method: "PATCH",
       body: { cleared: nextCleared },
       client_ts: nowIso,
@@ -197,9 +243,10 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
     if (!ctx) return;
     try {
       const pos = await getPosition();
+      const memberQs = memberToken ? `&member_token=${encodeURIComponent(memberToken)}` : "";
       await enqueue({
         kind: "checkin",
-        url: `/api/search/field/checkin?token=${encodeURIComponent(token)}`,
+        url: `/api/search/field/checkin?token=${encodeURIComponent(token)}${memberQs}`,
         method: "POST",
         body: { lat: pos.coords.latitude, lon: pos.coords.longitude },
         client_ts: new Date().toISOString(),
@@ -258,7 +305,8 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
       const zoneId = ctx.assigned_zones[0]?.id;
       if (zoneId) form.append("zone_id", zoneId);
       form.append("description", `Field photo from ${ctx.team.callsign || ctx.team.name}`);
-      const r = await fetch(`/api/search/field/photo?token=${encodeURIComponent(token)}`, {
+      const memberQs = memberToken ? `&member_token=${encodeURIComponent(memberToken)}` : "";
+      const r = await fetch(`/api/search/field/photo?token=${encodeURIComponent(token)}${memberQs}`, {
         method: "POST",
         body: form,
       });
@@ -283,9 +331,10 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
     } catch { /* Report without fresh GPS is still sent; location can be null. */ }
     const zoneId = ctx.assigned_zones[0]?.id;
     const nowIso = new Date().toISOString();
+    const memberQs = memberToken ? `&member_token=${encodeURIComponent(memberToken)}` : "";
     await enqueue({
       kind: "report",
-      url: `/api/search/field/report?token=${encodeURIComponent(token)}`,
+      url: `/api/search/field/report?token=${encodeURIComponent(token)}${memberQs}`,
       method: "POST",
       body: {
         type: data.type,
@@ -313,9 +362,10 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
       lat = pos.coords.latitude;
       lon = pos.coords.longitude;
     } catch { /* Still send SOS even without GPS. */ }
+    const memberQs = memberToken ? `&member_token=${encodeURIComponent(memberToken)}` : "";
     await enqueue({
       kind: "report",
-      url: `/api/search/field/report?token=${encodeURIComponent(token)}`,
+      url: `/api/search/field/report?token=${encodeURIComponent(token)}${memberQs}`,
       method: "POST",
       body: {
         type: "assist",
@@ -384,7 +434,22 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
               {ctx.team.status}
             </span>
           </div>
-          <p className="text-xs text-fg-4 truncate mt-0.5">{ctx.operation.name}</p>
+          <div className="flex items-center justify-between gap-2 mt-0.5">
+            <p className="text-xs text-fg-4 truncate">{ctx.operation.name}</p>
+            {ctx.operation.identity_mode !== "team" && (
+              <button
+                type="button"
+                onClick={() => setShowIdentify(true)}
+                className={`shrink-0 text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                  ctx.member
+                    ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-200"
+                    : "bg-amber-500/10 border-amber-500/40 text-amber-200"
+                }`}
+              >
+                {ctx.member ? ctx.member.name : "anon · tap to name in"}
+              </button>
+            )}
+          </div>
         </div>
         <OfflineBar />
         <GpsStatusPill status={gpsStatus} lastFixAt={lastFixAt} />
@@ -525,6 +590,28 @@ export default function FieldPage({ params }: { params: Promise<{ token: string 
         onSubmit={submitReport}
       />
 
+      {/* Identify modal — opens on first load when identity_mode !== 'team' and
+          the device isn't already named in, or when the user taps the header
+          pill to rename. Skippable unless identity_mode === 'required'. */}
+      {showIdentify && (
+        <IdentifyModal
+          token={token}
+          initialName={memberName || ""}
+          required={ctx.operation.identity_mode === "required"}
+          onSaved={(res) => {
+            try {
+              localStorage.setItem(memberTokenKey(token), res.sub_token);
+              localStorage.setItem(memberNameKey(token), res.name);
+            } catch {}
+            setMemberToken(res.sub_token);
+            setMemberName(res.name);
+            setShowIdentify(false);
+            load();
+          }}
+          onSkip={() => setShowIdentify(false)}
+        />
+      )}
+
       {/* Bottom action bar — fixed, home-indicator safe */}
       <FieldActionBar
         onCheckin={handleCheckin}
@@ -568,6 +655,89 @@ function GpsStatusPill({ status, lastFixAt }: { status: "unknown" | "ok" | "deni
     <div className={`mx-4 mt-2 px-3 py-1.5 border rounded text-[11px] font-medium inline-flex items-center gap-2 ${bg}`}>
       <Crosshair size={12} />
       <span>{label}</span>
+    </div>
+  );
+}
+
+// Hybrid identity name-in sheet. The "Skip" path is suppressed when the
+// operation is `identity_mode='required'` — the IC has said every report must
+// carry a name, and the mutation endpoints will 403 anonymous posts anyway, so
+// there is no point letting the driver dismiss the prompt.
+function IdentifyModal({
+  token,
+  initialName,
+  required,
+  onSaved,
+  onSkip,
+}: {
+  token: string;
+  initialName: string;
+  required: boolean;
+  onSaved: (res: { member_id: string; sub_token: string; name: string }) => void;
+  onSkip: () => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  async function save() {
+    const trimmed = name.trim();
+    if (!trimmed) { setErr("Enter your name or callsign"); return; }
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await search.fieldIdentify(token, trimmed);
+      onSaved(res);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 bg-black/60 flex items-end sm:items-center justify-center p-4">
+      <div className="w-full max-w-sm bg-surface-800 border border-surface-700 rounded-t-2xl sm:rounded-2xl p-5 shadow-xl">
+        <h2 className="text-lg font-semibold text-fg-1">Name in</h2>
+        <p className="text-xs text-fg-4 mt-1">
+          {required
+            ? "This operation requires each reporter to be named. Your name appears on the controller's IC board."
+            : "Add your name so the controller can see who sent each report. Skip to stay anonymous."}
+        </p>
+        <input
+          ref={inputRef}
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !saving) save(); }}
+          placeholder="Jamie McLeod"
+          autoComplete="name"
+          className="mt-3 w-full px-3 py-2 bg-surface-900 border border-surface-700 rounded text-sm focus:outline-none focus:border-accent"
+        />
+        {err && <div className="mt-2 text-[11px] text-red-300">{err}</div>}
+        <div className="mt-4 flex gap-2">
+          {!required && (
+            <button
+              type="button"
+              onClick={onSkip}
+              disabled={saving}
+              className="flex-1 px-3 py-2 text-sm bg-surface-700 hover:bg-surface-600 rounded text-fg-2 disabled:opacity-50"
+            >
+              Skip
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="flex-1 px-3 py-2 text-sm bg-accent text-black font-medium rounded disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

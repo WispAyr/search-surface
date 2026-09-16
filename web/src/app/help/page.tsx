@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Printer, ArrowLeft } from "lucide-react";
+import { Printer, ArrowLeft, BookOpen, ClipboardList, Download } from "lucide-react";
 import "./print.css";
 
 export default function HelpPage() {
@@ -34,6 +34,7 @@ export default function HelpPage() {
 
       <article className="max-w-[900px] mx-auto px-6 py-10 md:py-14 leading-relaxed">
         <Cover />
+        <DownloadsCard />
         <TOC />
 
         <Section id="overview" title="1. Overview" eyebrow="Getting oriented">
@@ -511,6 +512,56 @@ export default function HelpPage() {
 }
 
 /* ───────────────────────── components ───────────────────────── */
+
+// Screen-only hub for the three printable documents. Hidden from print so the
+// printed operator's manual still flows straight from the cover into the TOC.
+function DownloadsCard() {
+  return (
+    <div className="no-print mb-10 -mt-4">
+      <div className="text-xs tracking-[0.2em] uppercase text-fg-4 mb-3 flex items-center gap-2">
+        <Download size={12} /> Printable documents
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <a
+          href="#overview"
+          className="group p-4 rounded border border-line bg-surface-800 hover:border-accent/50 transition"
+        >
+          <div className="flex items-center gap-2 text-accent mb-1">
+            <BookOpen size={16} />
+            <span className="text-sm font-semibold">Operator&apos;s Guide</span>
+          </div>
+          <p className="text-xs text-fg-3">
+            Full reference for ICs — datums, grids, zones, teams, SAR tools, reports, exports. Scroll
+            below or <strong>Ctrl/⌘+P</strong> to save as PDF.
+          </p>
+        </a>
+        <Link
+          href="/help/field"
+          className="group p-4 rounded border border-line bg-surface-800 hover:border-accent/50 transition"
+        >
+          <div className="flex items-center gap-2 text-accent mb-1">
+            <ClipboardList size={16} />
+            <span className="text-sm font-semibold">Searcher Field Guide</span>
+          </div>
+          <p className="text-xs text-fg-3">
+            Two-minute read for volunteers on a phone — check-in, photo, report, SOS, offline
+            queue. A5 print-tuned for briefing packs.
+          </p>
+        </Link>
+        <div className="p-4 rounded border border-line bg-surface-800">
+          <div className="flex items-center gap-2 text-accent mb-1">
+            <Download size={16} />
+            <span className="text-sm font-semibold">Per-zone sheet</span>
+          </div>
+          <p className="text-xs text-fg-3">
+            Map, street checklist, datums, team QR, field-log grid — one A4 per zone. Open from
+            the <em>Sheet</em> button next to any zone in the Zones panel.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function Cover() {
   const today = new Date().toLocaleDateString("en-GB", {

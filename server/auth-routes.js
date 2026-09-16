@@ -9,11 +9,14 @@
 //   POST /api/auth/users    — invite a user to current tenant (owner only)
 //   PATCH /api/auth/users/:id — change role (owner only)
 //   DELETE /api/auth/users/:id — remove user (owner only)
+//   GET  /api/auth/kiosk    — token-gated bypass for CSU/kiosk displays (no login)
 //
 // The default behavior is signups are ALLOWED (to self-onboard). Set
 // DISABLE_SIGNUP=1 in env to lock signups and force owners to invite.
 
+const crypto = require('crypto');
 const express = require('express');
+const { db } = require('./db');
 const { tenants, users, sessions, settings, verifyPassword, syncPlatformAdmins } = require('./auth-db');
 const { attachTenant, requireTenant, requireRole, COOKIE_NAME } = require('./tenant-middleware');
 
@@ -231,6 +234,64 @@ router.delete('/users/:id', requireTenant, requireRole('owner'), (req, res) => {
   users.remove(req.params.id);
   sessions.revokeAllForUser(req.params.id);
   res.json({ ok: true });
+});
+
+// ── Kiosk bypass: auto-auth as CSU operator without a login form ──────────
+// Protected by KIOSK_TOKEN env var. Creates or refreshes a long-lived
+// (365-day) session for a reserved csu-kiosk@wispayr.online operator inside
+// the wispayr-csu tenant. Sets the session cookie and redirects to /?_kiosk=1
+// (or ?then= override). Safe to iframe: cookie is set same-origin and the
+// subsequent navigation within the iframe is same-site.
+const KIOSK_TOKEN = process.env.KIOSK_TOKEN || '';
+const KIOSK_EMAIL = process.env.KIOSK_EMAIL || 'csu-kiosk@wispayr.online';
+const KIOSK_TENANT_SLUG = 'wispayr-csu';
+const KIOSK_TENANT_NAME = 'WispAyr CSU';
+const KIOSK_SESSION_DAYS = 365;
+
+router.get('/kiosk', (req, res) => {
+  if (!KIOSK_TOKEN) return res.status(503).json({ error: 'Kiosk auth not configured (KIOSK_TOKEN unset)' });
+  const provided = String(req.query.token || '');
+  // Timing-safe comparison to avoid brute-force timing oracle
+  const expected = Buffer.from(KIOSK_TOKEN, 'utf8');
+  const given    = Buffer.from(provided.slice(0, KIOSK_TOKEN.length + 1).padEnd(KIOSK_TOKEN.length, '\0'), 'utf8');
+  if (given.length !== expected.length || !crypto.timingSafeEqual(given.slice(0, expected.length), expected)) {
+    return res.status(401).json({ error: 'Invalid kiosk token' });
+  }
+
+  // Find or create the CSU tenant
+  let tenant = tenants.getBySlug(KIOSK_TENANT_SLUG);
+  if (!tenant) {
+    tenant = tenants.create({ slug: KIOSK_TENANT_SLUG, name: KIOSK_TENANT_NAME, plan: 'pro' });
+  }
+
+  // Find or create the kiosk user inside that tenant
+  let user = users.findByEmail(KIOSK_EMAIL).find(u => u.tenant_id === tenant.id);
+  if (!user) {
+    const autoPassword = crypto.randomBytes(32).toString('hex');
+    user = users.create({
+      tenantId: tenant.id,
+      email: KIOSK_EMAIL,
+      password: autoPassword,
+      displayName: 'CSU Kiosk',
+      role: 'operator',
+    });
+  }
+
+  // Insert a long-lived session directly (sessions.create is hardcoded to 30 days)
+  const tok = crypto.randomBytes(32).toString('hex');
+  const now = new Date().toISOString();
+  const expires = new Date(Date.now() + KIOSK_SESSION_DAYS * 86400 * 1000).toISOString();
+  db.prepare(
+    `INSERT INTO tenant_sessions (token, user_id, tenant_id, created_at, expires_at, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(tok, user.id, tenant.id, now, expires, now);
+  users.recordLogin(user.id);
+
+  setSessionCookie(res, tok, expires);
+  const redirectTo = String(req.query.then || '/?_kiosk=1');
+  // Only allow relative paths to prevent open-redirect
+  const safePath = redirectTo.startsWith('/') ? redirectTo : '/?_kiosk=1';
+  res.redirect(302, safePath);
 });
 
 module.exports = router;
