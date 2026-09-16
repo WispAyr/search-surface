@@ -131,6 +131,54 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sst_op ON search_share_tokens(operation_id);
 `);
 
+// ── Residual probability / POD (docs/residual-probability.md) ──
+// A sweep is a RECORD, not a checkbox: who searched, with what, in what
+// conditions, covering how much. POD is derived from those facts, and
+// cumulative_pod on the zone is recomputed from them — never hand-set.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS search_zone_sweeps (
+    id TEXT PRIMARY KEY,
+    zone_id TEXT NOT NULL REFERENCES search_zones(id) ON DELETE CASCADE,
+    operation_id TEXT NOT NULL,
+    team_id TEXT,
+    resource_class TEXT NOT NULL,
+    method TEXT,
+    conditions TEXT,
+    coverage REAL DEFAULT 1,
+    pod REAL NOT NULL,
+    pod_basis TEXT,
+    searched_by TEXT,
+    notes TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_szs_zone ON search_zone_sweeps(zone_id);
+  CREATE INDEX IF NOT EXISTS idx_szs_op ON search_zone_sweeps(operation_id);
+`);
+
+for (const col of [
+  // Probability the subject is OUTSIDE the search area entirely. Never reduced
+  // by searching — you cannot search it — so it RISES as a share while zones
+  // clear. That rise is the signal that the area itself may be wrong.
+  'poa_outside REAL DEFAULT 0.15',
+  'clear_pod_threshold REAL DEFAULT 0.7',
+]) {
+  try { db.exec(`ALTER TABLE search_operations ADD COLUMN ${col}`); } catch { /* already present */ }
+}
+
+for (const col of [
+  // Forces the subsurface gate on zones that are not tagged with a water
+  // search_method but still drown people — slurry pits, tanks, deep culverts.
+  'high_consequence INTEGER DEFAULT 0',
+  // A gap left open on purpose has a name against it.
+  'risk_accepted_by TEXT',
+  'risk_accepted_at TEXT',
+  'risk_accepted_reason TEXT',
+]) {
+  try { db.exec(`ALTER TABLE search_zones ADD COLUMN ${col}`); } catch { /* already present */ }
+}
+
 // Additive migrations for pre-checklist DBs — SQLite will error on dup-column
 // so we swallow quietly. Runs once per boot, negligible cost.
 for (const col of [
@@ -245,9 +293,37 @@ for (const col of [
 // retype on every broadcast.
 for (const col of [
   'sitrep_recipients TEXT',
+  // Hybrid team/member identity. 'team' = single QR, no prompt (legacy behaviour).
+  // 'prompt' = default — first load on a phone asks for a name, skip allowed.
+  // 'required' = must name in before reporting; no anon use.
+  `identity_mode TEXT DEFAULT 'prompt' CHECK(identity_mode IN ('team','prompt','required'))`,
 ]) {
   try { db.exec(`ALTER TABLE search_operations ADD COLUMN ${col}`); } catch { /* already present */ }
 }
+
+// ── Per-team members (sub-token identity) ──
+// One team QR is still the entry point; when a field device opens /field/:token
+// we mint a sub-token bound to a named member on that device. Reports and
+// check-ins can then carry member_id in addition to team_id. Unchanged for
+// operations in identity_mode='team'.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS search_team_members (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL REFERENCES search_teams(id) ON DELETE CASCADE,
+    operation_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sub_token TEXT UNIQUE NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_stm_team ON search_team_members(team_id);
+  CREATE INDEX IF NOT EXISTS idx_stm_sub ON search_team_members(sub_token);
+`);
+
+// member_id on reports so clue/checkin/area_clear attribution can be
+// individual when the op is in prompt/required mode. NULL when reporting as
+// the team (identity_mode='team' or member skipped the prompt).
+try { db.exec(`ALTER TABLE search_reports ADD COLUMN member_id TEXT`); } catch { /* already present */ }
 
 // Additive migration: source_channel on comms log (tracks which integration
 // a message came from for cross-channel routing and UI badging).
@@ -345,7 +421,7 @@ const operations = {
   },
 
   update(id, fields) {
-    const allowed = ['name', 'type', 'status', 'datum_lat', 'datum_lon', 'bounds', 'subject_info', 'weather_notes', 'linked_event_id', 'sitrep_recipients'];
+    const allowed = ['name', 'type', 'status', 'datum_lat', 'datum_lon', 'bounds', 'subject_info', 'weather_notes', 'linked_event_id', 'sitrep_recipients', 'identity_mode'];
     const sets = [];
     const vals = [];
     for (const [k, v] of Object.entries(fields)) {
@@ -483,7 +559,10 @@ const zones = {
   update(id, fields) {
     const z = this.get(id);
     if (!z) return null;
-    const allowed = ['name', 'geometry', 'search_method', 'status', 'priority', 'assigned_team_id', 'pod', 'cumulative_pod', 'spacing_m', 'notes', 'poa', 'sweep_count', 'terrain_class', 'terrain_composition', 'corridor_metadata', 'searchable_windows'];
+    const allowed = ['name', 'geometry', 'search_method', 'status', 'priority', 'assigned_team_id', 'pod', 'cumulative_pod', 'spacing_m', 'notes', 'poa', 'sweep_count', 'terrain_class', 'terrain_composition', 'corridor_metadata', 'searchable_windows',
+      // Residual-probability fields. cumulative_pod and sweep_count stay in this
+      // list for migration/backfill only — normal writes go through sweeps.recomputeZone.
+      'high_consequence', 'risk_accepted_by', 'risk_accepted_at', 'risk_accepted_reason'];
     const sets = [];
     const vals = [];
     for (const [k, v] of Object.entries(fields)) {
@@ -656,13 +735,50 @@ const teams = {
   },
 };
 
+// ── Team members (hybrid identity) ──
+const members = {
+  listByTeam(teamId) {
+    return db.prepare(
+      `SELECT id, team_id, operation_id, name, created_at, last_seen_at
+       FROM search_team_members WHERE team_id = ? ORDER BY created_at ASC`
+    ).all(teamId);
+  },
+  listByOperation(operationId) {
+    return db.prepare(
+      `SELECT id, team_id, operation_id, name, created_at, last_seen_at
+       FROM search_team_members WHERE operation_id = ? ORDER BY created_at ASC`
+    ).all(operationId);
+  },
+  getBySubToken(subToken) {
+    if (!subToken) return null;
+    return db.prepare(`SELECT * FROM search_team_members WHERE sub_token = ?`).get(subToken) || null;
+  },
+  create(teamId, operationId, name) {
+    const clean = String(name || '').trim().slice(0, 60);
+    if (!clean) throw new Error('Member name required');
+    const id = uuid();
+    const subToken = generateToken();
+    db.prepare(
+      `INSERT INTO search_team_members (id, team_id, operation_id, name, sub_token, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(id, teamId, operationId, clean, subToken, now());
+    audit.log(operationId, `member:${clean}`, 'member_identified', { team_id: teamId, member_id: id });
+    return { id, team_id: teamId, operation_id: operationId, name: clean, sub_token: subToken, created_at: now() };
+  },
+  touch(memberId) {
+    db.prepare(`UPDATE search_team_members SET last_seen_at = ? WHERE id = ?`).run(now(), memberId);
+  },
+};
+
 // ── Reports ──
 const reports = {
   listByOperation(operationId, limit = 100) {
     return db.prepare(`
-      SELECT r.*, t.name as team_name, t.callsign as team_callsign
+      SELECT r.*, t.name as team_name, t.callsign as team_callsign,
+             m.name as member_name
       FROM search_reports r
       LEFT JOIN search_teams t ON r.team_id = t.id
+      LEFT JOIN search_team_members m ON r.member_id = m.id
       WHERE r.operation_id = ?
       ORDER BY r.created_at DESC
       LIMIT ?
@@ -673,7 +789,7 @@ const reports = {
   // from the field offline queue — we keep the real time-of-action in the audit
   // trail instead of the server-drain time. Clamp to a sane window to reject
   // obvious clock skew / spoofed backdates.
-  create(operationId, { zone_id, team_id, type, lat, lon, grid_ref, description, photo_url, severity, created_at }) {
+  create(operationId, { zone_id, team_id, member_id, type, lat, lon, grid_ref, description, photo_url, severity, created_at }) {
     const id = uuid();
     const nowTs = now();
     let ts = nowTs;
@@ -685,11 +801,12 @@ const reports = {
       }
     }
     db.prepare(`
-      INSERT INTO search_reports (id, operation_id, zone_id, team_id, type, lat, lon, grid_ref, description, photo_url, severity, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, operationId, zone_id || null, team_id || null, type, lat || null, lon || null,
-      grid_ref || null, description || null, photo_url || null, severity || 'info', ts);
-    audit.log(operationId, team_id || 'operator', 'report_submitted', { report_id: id, type, severity, queued: ts !== nowTs });
+      INSERT INTO search_reports (id, operation_id, zone_id, team_id, member_id, type, lat, lon, grid_ref, description, photo_url, severity, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, operationId, zone_id || null, team_id || null, member_id || null, type,
+      lat || null, lon || null, grid_ref || null, description || null, photo_url || null,
+      severity || 'info', ts);
+    audit.log(operationId, team_id || 'operator', 'report_submitted', { report_id: id, type, severity, member_id: member_id || null, queued: ts !== nowTs });
     db.prepare('UPDATE search_operations SET updated_at = ? WHERE id = ?').run(nowTs, operationId);
     return db.prepare('SELECT * FROM search_reports WHERE id = ?').get(id);
   },
@@ -771,6 +888,84 @@ const datums = {
 };
 
 // ── Audit ──
+const pod = require('./pod-model');
+
+// ── Sweeps: the evidence behind any clearance claim ─────────────────────────
+const sweeps = {
+  listByZone(zoneId) {
+    return db.prepare('SELECT * FROM search_zone_sweeps WHERE zone_id = ? ORDER BY created_at ASC')
+      .all(zoneId)
+      .map(r => ({ ...r, conditions: parseJSON(r.conditions) || [], pod_basis: parseJSON(r.pod_basis) }));
+  },
+
+  listByOperation(operationId) {
+    return db.prepare('SELECT * FROM search_zone_sweeps WHERE operation_id = ? ORDER BY created_at ASC')
+      .all(operationId)
+      .map(r => ({ ...r, conditions: parseJSON(r.conditions) || [], pod_basis: parseJSON(r.pod_basis) }));
+  },
+
+  /**
+   * Record a sweep. POD is DERIVED here from what was actually done — callers
+   * do not get to assert it. The correlation penalty is applied against the
+   * sweeps already on this zone, so a repeated method is automatically worth
+   * less than the first look was.
+   */
+  create(zoneId, { operation_id, team_id, resource_class, method, conditions,
+    coverage, searched_by, notes, started_at, completed_at }) {
+    const prior = this.listByZone(zoneId);
+    const priorSameMethod = pod.priorSameMethodCount(prior, resource_class, method);
+    const { pod: podValue, basis } = pod.computePod({
+      resource_class, method,
+      conditions: conditions || [],
+      coverage: coverage == null ? 1 : coverage,
+      priorSameMethod,
+    });
+
+    const id = uuid();
+    const ts = now();
+    db.prepare(`
+      INSERT INTO search_zone_sweeps (id, zone_id, operation_id, team_id, resource_class,
+        method, conditions, coverage, pod, pod_basis, searched_by, notes,
+        started_at, completed_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, zoneId, operation_id, team_id || null, resource_class,
+      method || pod.DEFAULT_METHOD[resource_class] || null,
+      JSON.stringify(conditions || []),
+      coverage == null ? 1 : coverage,
+      podValue, JSON.stringify(basis), searched_by || null, notes || null,
+      started_at || null, completed_at || ts, ts);
+
+    this.recomputeZone(zoneId);
+    audit.log(operation_id, searched_by || 'operator', 'sweep_recorded', {
+      zone_id: zoneId, resource_class, method, pod: podValue, coverage,
+    });
+    return this.get(id);
+  },
+
+  get(id) {
+    const r = db.prepare('SELECT * FROM search_zone_sweeps WHERE id = ?').get(id);
+    if (!r) return null;
+    return { ...r, conditions: parseJSON(r.conditions) || [], pod_basis: parseJSON(r.pod_basis) };
+  },
+
+  remove(id) {
+    const row = this.get(id);
+    if (!row) return false;
+    db.prepare('DELETE FROM search_zone_sweeps WHERE id = ?').run(id);
+    this.recomputeZone(row.zone_id);
+    return true;
+  },
+
+  /** cumulative_pod and sweep_count on the zone are always derived, never set. */
+  recomputeZone(zoneId) {
+    const list = this.listByZone(zoneId);
+    const cum = pod.cumulativePod(list);
+    db.prepare('UPDATE search_zones SET cumulative_pod = ?, sweep_count = ?, updated_at = ? WHERE id = ?')
+      .run(cum, list.length, now(), zoneId);
+    return cum;
+  },
+};
+
 const audit = {
   log(operationId, actor, action, detail) {
     db.prepare(`
@@ -947,4 +1142,4 @@ const mapPrefs = {
   },
 };
 
-module.exports = { operations, zones, teams, reports, comms, datums, audit, shareTokens, generateSitrep, routing, mapPrefs };
+module.exports = { operations, zones, teams, members, reports, comms, datums, audit, shareTokens, generateSitrep, routing, mapPrefs, sweeps, pod };

@@ -17,11 +17,15 @@ export const DEFAULT_MAP_PREFS: Required<MapPrefs> = {
   show_hillshade: true,
   extrude_zones: true,
   show_airspace: false,
+  show_air: false,
   show_teams: true,
   show_datums: true,
   show_zone_labels: true,
   show_tide_overlay: false,
   show_street_lens: false,
+  show_premises: false,
+  premises_preset: "businesses",
+  premises_radius_m: 2000,
   pitch: 55,
   exaggeration: 1.3,
 };
@@ -61,7 +65,15 @@ interface SearchState {
   showSitrepPanel: boolean;
   settingDatum: boolean;
   showAirspace: boolean;
-  rightPanel: "zones" | "datums" | "timeline" | "reports" | "comms" | "teams" | "conditions" | "audit" | "sar" | "zello";
+  showAir: boolean;
+  /** icao24s the operator has hidden from the map — a working-session filter. */
+  hiddenAircraft: string[];
+  toggleAircraft: (icao24: string) => void;
+  showAllAircraft: () => void;
+  /** [lat, lon, zoom] the map should fly to; cleared once consumed. */
+  airFocus: [number, number, number] | null;
+  setAirFocus: (f: [number, number, number] | null) => void;
+  rightPanel: "zones" | "residual" | "air" | "datums" | "timeline" | "reports" | "comms" | "teams" | "conditions" | "audit" | "sar" | "zello";
   // ── SAR Tools (subject profile + rings + isochrones + hazards) ──
   showSarTools: boolean;
   subjectProfileId: string | null; // e.g. 'dementia', 'child_7_9', 'dog'
@@ -184,6 +196,9 @@ export const useSearchStore = create<SearchState>((set) => ({
   showSitrepPanel: false,
   settingDatum: false,
   showAirspace: false,
+  showAir: false,
+  hiddenAircraft: [],
+  airFocus: null,
   rightPanel: "zones",
   showSarTools: false,
   subjectProfileId: null,
@@ -271,6 +286,14 @@ export const useSearchStore = create<SearchState>((set) => ({
         : { settingDatum: false }
     ),
   toggleAirspace: () => set((s) => ({ showAirspace: !s.showAirspace })),
+  toggleAir: () => set((s) => ({ showAir: !s.showAir })),
+  toggleAircraft: (icao24) => set((s) => ({
+    hiddenAircraft: s.hiddenAircraft.includes(icao24)
+      ? s.hiddenAircraft.filter((x) => x !== icao24)
+      : [...s.hiddenAircraft, icao24],
+  })),
+  showAllAircraft: () => set({ hiddenAircraft: [] }),
+  setAirFocus: (f) => set({ airFocus: f }),
   setRightPanel: (panel) => set({ rightPanel: panel }),
   setPreviewZones: (zones) => set({ previewZones: zones }),
   setMobilePanelOpen: (v) => set({ mobilePanelOpen: v }),

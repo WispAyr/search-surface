@@ -11,3 +11,9 @@ server/data/.auth-secret
 server/data/.bootstrap-owner.txt
 .DS_Store
 tsconfig.tsbuildinfo
+.env.bak*
+*.bak-*
+*.db.bak*
+.next-build/
+.next-prev/
+.next-*/

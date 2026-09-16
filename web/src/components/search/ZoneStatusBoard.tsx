@@ -251,6 +251,7 @@ function ZoneDetail({
   // lets the IC preview "what would this zone achieve if I sent Alpha?" during
   // grid planning without actually committing the assignment.
   const [previewTeamId, setPreviewTeamId] = useState<string | null>(null);
+  const [clearanceReasons, setClearanceReasons] = useState<string[] | null>(null);
   const { setRightPanel } = useSearchStore();
 
   const handleUpdate = async (fields: Record<string, unknown>) => {
@@ -260,7 +261,15 @@ function ZoneDetail({
       await search.updateZone(zone.id, fields);
       onRefresh();
     } catch (err: any) {
-      setError(err?.message || "Update failed");
+      // A clearance refusal is not a generic failure — it carries the reasons,
+      // and those are the whole point of the gate.
+      if (err?.status === 409 && err?.reasons?.length) {
+        setClearanceReasons(err.reasons);
+        setError(null);
+      } else {
+        setError(err?.message || "Update failed");
+        setClearanceReasons(null);
+      }
     } finally {
       setUpdating(false);
     }
@@ -654,17 +663,36 @@ function ZoneDetail({
               Start
             </button>
             <button
-              onClick={() => handleUpdate({ status: "complete", pod: 0.7 })}
+              onClick={() => handleUpdate({ status: "complete" })}
               disabled={updating}
               className="px-2 py-1 bg-green-600/20 text-green-300 rounded hover:bg-green-600/30 disabled:opacity-50"
               title="Mark complete"
             >
               <Check size={12} />
             </button>
+            <a
+              href={`/zone/${zone.id}/print?auto=1`}
+              target="_blank"
+              rel="noopener"
+              className="px-2 py-1 bg-surface-700 text-fg-3 rounded hover:text-fg-1 flex items-center gap-1"
+              title="Open printable zone sheet (map, streets, QR, notes grid)"
+            >
+              <Download size={12} /> Sheet
+            </a>
           </>
         )}
         {error && (
           <div className="w-full text-[10px] text-red-400">{error}</div>
+        )}
+        {clearanceReasons && (
+          <div className="w-full rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] leading-relaxed">
+            <div className="font-semibold text-amber-300 mb-1">Not cleared — evidence is short</div>
+            <ul className="list-disc pl-3.5 space-y-0.5 text-amber-200/90">
+              {clearanceReasons.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+            <button onClick={() => setClearanceReasons(null)}
+              className="mt-1.5 text-amber-300/70 hover:text-amber-200 underline">dismiss</button>
+          </div>
         )}
         {zone.status === "complete" && (
           <span className="text-green-400 flex items-center gap-1">

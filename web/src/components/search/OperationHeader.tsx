@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { search } from "@/lib/api";
 import { useSearchStore } from "@/stores/search";
 import { isTeamSilent, isTeamFatigued, SILENT_THRESHOLD_MIN, FATIGUE_THRESHOLD_MIN } from "@/lib/teamStatus";
@@ -25,7 +26,7 @@ import {
   Radar,
   Droplets,
   Clock,
-} from "lucide-react";
+  BookOpen, Radio } from "lucide-react";
 import { HelpPanel } from "./HelpPanel";
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
@@ -52,7 +53,7 @@ interface OperationHeaderProps {
 export function OperationHeader({ operation, onBack, onRefresh }: OperationHeaderProps) {
   const {
     toggleGridGenerator, togglePODCalculator, toggleExportPanel, toggleSitrepPanel,
-    toggleAirspace, showAirspace, setAddingDatum, setRightPanel, setMobilePanelOpen,
+    toggleAirspace, showAirspace, mapPrefs, updateMapPrefs, setAddingDatum, setRightPanel, setMobilePanelOpen,
     showHazards, setShowHazards, setShowAttractors, hazardsHint,
   } = useSearchStore();
   const [statusLoading, setStatusLoading] = useState(false);
@@ -216,6 +217,9 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
         <button onClick={toggleAirspace} className={`p-1.5 transition ${showAirspace ? "text-accent" : "text-fg-4 hover:text-accent"}`} title="UK Airspace Restrictions">
           <Plane size={16} />
         </button>
+        <button onClick={() => updateMapPrefs({ show_air: !mapPrefs.show_air })} className={`p-1.5 transition ${mapPrefs.show_air ? "text-accent" : "text-fg-4 hover:text-accent"}`} title="Air activity — live ADS-B + helicopter loiter history">
+          <Radio size={16} />
+        </button>
         <button
           onClick={() => {
             const next = !showHazards;
@@ -259,6 +263,15 @@ export function OperationHeader({ operation, onBack, onRefresh }: OperationHeade
         <button onClick={onRefresh} className="p-1.5 text-fg-4 hover:text-accent transition" title="Refresh">
           <RefreshCw size={14} />
         </button>
+        <Link
+          href="/help"
+          target="_blank"
+          rel="noopener"
+          className="p-1.5 text-fg-4 hover:text-accent transition"
+          title="Printable manuals (Operator's Guide + Searcher Field Guide)"
+        >
+          <BookOpen size={16} />
+        </Link>
         <button onClick={() => setShowHelp(true)} className="p-1.5 text-fg-4 hover:text-accent transition" title="Help & Guide">
           <HelpCircle size={16} />
         </button>

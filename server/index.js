@@ -9,6 +9,7 @@ const path = require('path');
 const axios = require('axios').default || require('axios');
 
 const searchRoutes = require('./routes/search');
+const airRoutes = require('./routes/air');
 const searchHelperRoutes = require('./search-helpers');
 const authRoutes = require('./auth-routes');
 const adminRoutes = require('./admin-routes');
@@ -126,6 +127,7 @@ app.use('/api/prism', async (req, res) => {
 // ── Search helpers (geocode, OSM, LPB, airspace) — must come first ──
 app.use('/api/search', searchHelperRoutes);
 // ── Search operations (zones, teams, reports, comms, SITREP, field) ──
+app.use('/api/search/air', airRoutes);
 app.use('/api/search', searchRoutes);
 
 app.listen(PORT, () => {
